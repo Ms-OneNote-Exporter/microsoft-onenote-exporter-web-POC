@@ -1,0 +1,27 @@
+{
+  "name": "microsoft-onenote-exporter-web",
+  "version": "0.0.0",
+  "private": true,
+  "description": "POC web service driving the unmodified @msout OneNote exporter packages",
+  "license": "MIT",
+  "workspaces": [
+    "shared",
+    "app",
+    "runner"
+  ],
+  "scripts": {
+    "build": "npm run build -w @msout-poc/shared && npm run build -w @msout-poc/app && npm run build -w @msout-poc/runner",
+    "build:shared": "npm run build -w @msout-poc/shared",
+    "dev:app": "npm run dev -w @msout-poc/app",
+    "dev:runner": "npm run dev -w @msout-poc/runner",
+    "test": "npm run test -w @msout-poc/shared && npm run test -w @msout-poc/app && npm run test -w @msout-poc/runner",
+    "typecheck": "npm run typecheck -w @msout-poc/shared && npm run typecheck -w @msout-poc/app && npm run typecheck -w @msout-poc/runner",
+    "fake": "MSOUT_FAKE=1 RUNNER_TOKEN=devtoken DATA_ROOT=../data npm run dev -w @msout-poc/app & MSOUT_FAKE=1 RUNNER_TOKEN=devtoken npm run dev -w @msout-poc/runner"
+  },
+  "devDependencies": {
+    "typescript": "5.7.3"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

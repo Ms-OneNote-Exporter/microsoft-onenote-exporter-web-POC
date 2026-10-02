@@ -1,0 +1,21 @@
+{
+  "name": "@msout-poc/shared",
+  "version": "0.0.0",
+  "private": true,
+  "description": "GUID validation, session paths and the state/event contract shared by app, runner and web",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "5.7.3",
+    "vitest": "5.0.3"
+  }
+}

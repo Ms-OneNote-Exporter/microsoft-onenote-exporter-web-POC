@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+.npm/
+
+# Build output
+app/dist/
+runner/dist/
+
+# Live session data - this is where auth.json, exported notebooks and logs land.
+# It must never be committed: it contains Microsoft cookies and note content.
+data/
+
+# Local env
+.env
+.env.local
+
+# Playwright / OS noise
+.DS_Store
+*.log

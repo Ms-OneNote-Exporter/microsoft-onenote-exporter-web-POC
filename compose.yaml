@@ -1,0 +1,61 @@
+# POC topology - see PLAN-v3(POC).md §3.
+#
+# Two containers, one bind-mounted data directory, no reverse proxy. This is a
+# POC meant to run on localhost or a trusted LAN: no TLS, no rate limits, and the
+# session GUID is the only credential. Putting it on the public internet means
+# first implementing PLAN-v2 §13.1 (GUID + secret cookie), Caddy/TLS and the
+# layered rate limits in PLAN-v2 §10.
+
+services:
+  app:
+    build:
+      context: ./app
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/data
+    environment:
+      DATA_ROOT: /data
+      RUNNER_URL: http://runner:8080
+      RUNNER_TOKEN: ${RUNNER_TOKEN:?set RUNNER_TOKEN in .env}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-12}
+      MIN_FREE_DISK_MB: ${MIN_FREE_DISK_MB:-2048}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    depends_on:
+      - runner
+    restart: unless-stopped
+
+  runner:
+    build:
+      context: ./runner
+    # No `ports:` on purpose. The runner is the process that receives passwords
+    # and holds auth.json; nothing outside the compose network may address it.
+    volumes:
+      - ./data:/data
+    environment:
+      # One env var honoured by all three @msout packages, so every app.log and
+      # HTML dump lands inside the session directory and dies with it on erase.
+      ONENOTE_EXPORT_LOG_DIR: /data/logs
+      RUNNER_TOKEN: ${RUNNER_TOKEN:?set RUNNER_TOKEN in .env}
+      LOGIN_TIMEOUT_MS: ${LOGIN_TIMEOUT_MS:-900000}
+      EXPORT_TIMEOUT_MS: ${EXPORT_TIMEOUT_MS:-5400000}
+      # Fake CLIs that emit real log lines. Never set in anything but local dev.
+      MSOUT_FAKE: ${MSOUT_FAKE:-0}
+      # The only supported way to disable the Chromium renderer sandbox, for a
+      # host that cannot enable unprivileged user namespaces. See §18.
+      CHROMIUM_NO_SANDBOX: ${CHROMIUM_NO_SANDBOX:-0}
+    # Technical requirements, not paranoia. Without them Chromium does not run:
+    # see PLAN-v3(POC).md §18 for the per-flag rationale.
+    init: true
+    shm_size: "1g"
+    tmpfs:
+      - /tmp:rw,nosuid,size=1g,uid=1000,gid=1000
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 4g
+    memswap_limit: 4g
+    cpus: 2
+    pids_limit: 512
+    restart: unless-stopped
