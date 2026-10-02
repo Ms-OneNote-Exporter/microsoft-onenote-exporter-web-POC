@@ -1,4 +1,4 @@
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 /**
  * Runtime configuration, read once at boot.
@@ -33,8 +33,16 @@ export interface RunnerConfig {
   chromiumNoSandbox: boolean;
 }
 
-function int(name: string, fallback: number): number {
-  const raw = process.env[name];
+/**
+ * Both read the `env` argument rather than `process.env`.
+ *
+ * That is not a stylistic preference: taking the parameter and then ignoring it
+ * means `loadConfig(someEnv)` returns a configuration built from a different
+ * source, which is a bug that only shows up when someone tries to configure the
+ * process without mutating its environment.
+ */
+function int(env: NodeJS.ProcessEnv, name: string, fallback: number): number {
+  const raw = env[name];
   if (raw === undefined || raw.trim() === '') return fallback;
   const n = Number.parseInt(raw, 10);
   if (!Number.isFinite(n) || n <= 0) {
@@ -43,8 +51,8 @@ function int(name: string, fallback: number): number {
   return n;
 }
 
-function bool(name: string, fallback = false): boolean {
-  const raw = process.env[name];
+function bool(env: NodeJS.ProcessEnv, name: string, fallback = false): boolean {
+  const raw = env[name];
   if (raw === undefined || raw.trim() === '') return fallback;
   return ['1', 'true', 'yes', 'on'].includes(raw.trim().toLowerCase());
 }
@@ -58,16 +66,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RunnerConfig {
   }
 
   return {
-    port: int('RUNNER_PORT', 8080),
+    port: int(env, 'RUNNER_PORT', 8080),
     token,
     dataRoot: env.DATA_ROOT?.trim() || '/data',
-    loginTimeoutMs: int('LOGIN_TIMEOUT_MS', 15 * 60_000),
-    exportTimeoutMs: int('EXPORT_TIMEOUT_MS', 90 * 60_000),
-    listTimeoutMs: int('LIST_TIMEOUT_MS', 5 * 60_000),
-    abortGraceMs: int('ABORT_GRACE_MS', 10_000),
-    ringSize: int('LOG_RING_SIZE', 500),
-    fake: bool('MSOUT_FAKE'),
-    chromiumNoSandbox: bool('CHROMIUM_NO_SANDBOX'),
+    loginTimeoutMs: int(env, 'LOGIN_TIMEOUT_MS', 15 * 60_000),
+    exportTimeoutMs: int(env, 'EXPORT_TIMEOUT_MS', 90 * 60_000),
+    listTimeoutMs: int(env, 'LIST_TIMEOUT_MS', 5 * 60_000),
+    abortGraceMs: int(env, 'ABORT_GRACE_MS', 10_000),
+    ringSize: int(env, 'LOG_RING_SIZE', 500),
+    fake: bool(env, 'MSOUT_FAKE'),
+    chromiumNoSandbox: bool(env, 'CHROMIUM_NO_SANDBOX'),
   };
 }
 
@@ -75,14 +83,38 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RunnerConfig {
 export const PACKAGE_ROOT = join(__dirname, '..');
 
 /**
- * Resolves a CLI entry point inside an installed @msout package.
+ * Resolves the CLI entry point of an installed @msout package.
  *
- * `main` in each package points at the CLI module, so the package's own metadata
- * decides where the entry point is. That is what makes the exact pinned version
- * the single source of truth: a new version that moves the file moves with it,
- * and a version whose entry point has gone missing fails loudly at spawn time
- * instead of silently exporting nothing.
+ * Through the `./cli` subpath, which each of the three packages declares in its
+ * `exports` map. That is deliberate on their part - it is the supported way to
+ * reach the command-line entry point - and it is also the only one that works,
+ * because their `exports` maps do not open `./src/index.js` to consumers.
+ *
+ * Two mistakes are encoded as comments here because both were made, and both are
+ * invisible in fake mode:
+ *
+ *   - `main` is the *library* (`src/auth.js`), not the program. Running it starts
+ *     a file that defines some functions and exits. The first live login died in
+ *     fifty milliseconds with no output, while every fake-mode test passed,
+ *     because fake mode names its own script and never resolves this.
+ *   - Resolving `<pkg>/<bin>` fails outright, because `exports` hides the file.
+ *
+ * The package's own metadata remains the single source of truth for where the
+ * entry point lives, so a version that moves it moves with it.
  */
 export function cliEntry(pkg: string): string {
-  return require(`${pkg}/package.json`).main as string;
+  try {
+    return require.resolve(`${pkg}/cli`);
+  } catch {
+    // A version without the subpath: fall back to the declared bin, resolved
+    // against the package directory rather than through `exports`.
+  }
+
+  const meta = require(`${pkg}/package.json`) as { bin?: string | Record<string, string> };
+  const bin = typeof meta.bin === 'string' ? meta.bin : Object.values(meta.bin ?? {})[0];
+  if (!bin) {
+    throw new Error(`${pkg} exposes no ./cli subpath and declares no bin; cannot run it as a CLI`);
+  }
+  const root = dirname(require.resolve(`${pkg}/package.json`)).replace(/[/\\]package\.json$/, '');
+  return join(root, bin);
 }

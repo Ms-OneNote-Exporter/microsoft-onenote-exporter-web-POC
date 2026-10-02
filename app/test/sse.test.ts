@@ -123,11 +123,15 @@ describe('SseHub', () => {
   });
 
   describe('reconnect', () => {
-    it('gives a first-time subscriber a snapshot', () => {
+    it('gives a first-time subscriber a snapshot followed by the recent history', () => {
       hub.publish(GUID, { type: 'session-erased' });
+      sent = [];
       hub.subscribe(GUID, 0, state, sink());
-      expect(sent).toHaveLength(1);
+      // Snapshot first, then what was missed - so a tab opened after a job
+      // finished shows the log that explains the state it was just given.
       expect(sent[0]!.event.type).toBe('snapshot');
+      expect(sent.slice(1)).toHaveLength(1);
+      expect(sent[1]!.event.type).toBe('session-erased');
     });
 
     it('replays only what was missed when the cursor is usable', () => {
@@ -147,14 +151,15 @@ describe('SseHub', () => {
       expect(sent).toHaveLength(0);
     });
 
-    it('falls back to a snapshot when the cursor has aged out', () => {
+    it('falls back to a snapshot plus the buffer when the cursor has aged out', () => {
       // The case that matters: a browser that was away long enough for its
       // events to be evicted must be told the current state, not handed a
       // partial replay that looks complete.
       for (let i = 0; i < 10; i += 1) hub.publish(GUID, { type: 'session-erased' });
+      sent = [];
       hub.subscribe(GUID, 2, state, sink());
-      expect(sent).toHaveLength(1);
       expect(sent[0]!.event.type).toBe('snapshot');
+      expect(sent.slice(1)).toHaveLength(5); // the 5 the ring kept
     });
 
     it('treats a cursor older than everything kept as a gap', () => {
@@ -231,8 +236,8 @@ describe('SseHub', () => {
       hub.clear(GUID);
       expect(closed).toBe(1);
       sent = [];
-      // A subscriber that reconnects after an erase gets a fresh snapshot rather
-      // than the dead session's history.
+      // A subscriber that reconnects after an erase gets a fresh snapshot, and
+      // no history: the buffer went with the session.
       hub.subscribe(GUID, 0, state, sink());
       expect(sent).toHaveLength(1);
       expect(sent[0]!.event.type).toBe('snapshot');

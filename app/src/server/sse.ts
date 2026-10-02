@@ -94,7 +94,13 @@ export class SseHub {
         if (entry.id > lastEventId) guardedSend(entry.event, entry.id);
       }
     } else {
+      // Snapshot *and* the whole buffer. State alone is not enough for a tab
+      // opened after a job has finished: it would show "sign-in failed" next to
+      // an empty log, which reads as a bug rather than as history the server
+      // simply had not been asked for yet. The buffer is bounded, so this stays
+      // a few hundred lines at worst.
       guardedSend({ type: 'snapshot', state: state() }, s.nextId - 1);
+      for (const entry of s.buffer) guardedSend(entry.event, entry.id);
     }
 
     const keepalive = setInterval(() => {

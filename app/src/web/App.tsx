@@ -71,7 +71,8 @@ export function useSession(guid: string): {
       case 'snapshot':
         lastId.current = 0;
         setState(event.state);
-        setLogs([]);
+        // The log is not cleared: the server follows every snapshot with the
+        // events it still holds, so wiping the panel here would blank it again.
         return;
       case 'log':
         lastId.current = Math.max(lastId.current, event.seq);

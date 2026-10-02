@@ -8,7 +8,12 @@
       forbids them anyway, and this meta makes that visible in the document.
     -->
     <meta name="referrer" content="no-referrer" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'" />
+    <!--
+      A second copy of the policy as a header, which is the one that counts.
+      `frame-ancestors` is deliberately absent here: it is ignored when delivered
+      through a meta element, and only the header version can set it.
+    -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'none'" />
     <title>OneNote exporter</title>
   </head>
   <body>

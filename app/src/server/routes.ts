@@ -50,6 +50,36 @@ export async function buildServer(config: AppConfig, service: Service) {
     (_req, body, done) => done(null, body),
   );
 
+  /**
+   * Security headers, on every response.
+   *
+   * Sent as headers rather than only as a `<meta>` CSP, because `frame-ancestors`
+   * is ignored in a meta element - the browser says so in the console and the
+   * protection simply is not there.
+   *
+   * `default-src 'self'` is the whole no-third-party policy: no CDN, no
+   * analytics, no remote fonts, and nothing can inject a script even if a
+   * OneNote page name or a log line were ever rendered as markup.
+   */
+  app.addHook('onSend', async (_req, reply, payload) => {
+    reply.header(
+      'content-security-policy',
+      "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; " +
+        "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+    );
+    reply.header('x-content-type-options', 'nosniff');
+    reply.header('referrer-policy', 'no-referrer');
+    reply.header('cross-origin-opener-policy', 'same-origin');
+    reply.header('cross-origin-resource-policy', 'same-origin');
+    // No caching: a session page on a shared machine should never be the page
+    // the next person sees. Event streams are excluded, since a cached stream
+    // would be worse still.
+    if (!String(reply.getHeader('content-type') ?? '').includes('text/event-stream')) {
+      reply.header('cache-control', 'no-store');
+    }
+    return payload;
+  });
+
   const guidOf = (req: FastifyRequest): string | null => {
     const raw = (req.query as { guid?: string }).guid ?? (req.params as { guid?: string }).guid;
     return isValidGuid(raw) ? raw : null;

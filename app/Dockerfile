@@ -22,10 +22,12 @@ COPY shared/package.json ./shared/
 COPY runner/package.json ./runner/
 COPY app/package.json ./app/
 
-# --omit=dev: the image runs compiled output. Playwright and the @msout packages
-# come along as transitive dependencies of the runner workspace, because npm
-# hoists workspaces into one tree; only the runner ever requires them.
-RUN npm ci --omit=dev
+# Dev dependencies are needed *here*: this is a build stage, and the TypeScript
+# that produces dist/ is a devDependency. They are pruned below, once the
+# compiled output exists. Playwright and the @msout packages come along as
+# transitive dependencies of the runner workspace, because npm hoists workspaces
+# into one tree; only the runner ever requires them.
+RUN npm ci
 
 COPY shared/ ./shared/
 COPY app/ ./app/
@@ -34,6 +36,10 @@ COPY app/ ./app/
 RUN npm run build -w @msout-poc/shared \
  && npm run build:server -w @msout-poc/app \
  && npm run build:web -w @msout-poc/app
+
+# The build tools are no longer needed and are not small. Pruning here rather
+# than copying node_modules from a host keeps the image to what it runs on.
+RUN npm prune --omit=dev
 
 # The data root is a bind mount from the host; pre-creating it as node-owned lets
 # a session directory be created on first use even when compose created the mount

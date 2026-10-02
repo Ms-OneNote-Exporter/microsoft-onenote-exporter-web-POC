@@ -26,9 +26,10 @@ COPY shared/package.json ./shared/
 COPY runner/package.json ./runner/
 COPY app/package.json ./app/
 
-# --omit=dev: tsx and vitest are development tools. The image runs compiled
-# output, and the @msout packages pull in playwright, which is the heavy part.
-RUN npm ci --omit=dev
+# Dev dependencies are needed *here*: this is a build stage, and the TypeScript
+# and Vite that produce dist/ are devDependencies. They are pruned below, once
+# the compiled output exists.
+RUN npm ci
 
 # Chromium's shared libraries (fonts, shared objects). Needs root for apt.
 RUN npx playwright install-deps chromium
@@ -39,6 +40,10 @@ COPY runner/ ./runner/
 # Build the shared package and the runner from source. tsconfig emits to dist/,
 # and the sidecar runs `node runner/dist/index.js`.
 RUN npm run build -w @msout-poc/shared && npm run build -w @msout-poc/runner
+
+# The build tools are no longer needed and are not small. Pruning here rather
+# than copying node_modules from a host keeps the image to what it runs on.
+RUN npm prune --omit=dev
 
 # Browser binaries installed as the unprivileged `node` user, so the cache lives
 # in that user's HOME and stays writable after privileges are dropped. Baked into
