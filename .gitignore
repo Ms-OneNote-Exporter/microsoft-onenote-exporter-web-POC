@@ -17,3 +17,7 @@ data/
 # Playwright / OS noise
 .DS_Store
 *.log
+
+# user files
+reviews/
+PLAN*.md

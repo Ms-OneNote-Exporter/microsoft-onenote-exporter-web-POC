@@ -1,0 +1,7 @@
+[2026-10-02 20:39:18+02:00] [ERROR] Export failed:
+Error: Authentication file not found: /nonexistent/auth.json
+    at getAuthenticatedContextWithFile (/private/var/folders/26/91sqdpnd34d7pn_cby7qg2nw0000gn/T/opencode/msout-fixtures/node_modules/@msout/microsoft-onenote-export-notebook/src/auth-context.js:194:15)
+    at async listNotebooks (/private/var/folders/26/91sqdpnd34d7pn_cby7qg2nw0000gn/T/opencode/msout-fixtures/node_modules/@msout/microsoft-onenote-export-notebook/src/navigator.js:84:34)
+    at async runExport (/private/var/folders/26/91sqdpnd34d7pn_cby7qg2nw0000gn/T/opencode/msout-fixtures/node_modules/@msout/microsoft-onenote-export-notebook/src/exporter.js:1279:19)
+    at async Command.<anonymous> (/private/var/folders/26/91sqdpnd34d7pn_cby7qg2nw0000gn/T/opencode/msout-fixtures/node_modules/@msout/microsoft-onenote-export-notebook/src/index.js:54:13)
+    at async Command.parseAsync (/private/var/folders/26/91sqdpnd34d7pn_cby7qg2nw0000gn/T/opencode/msout-fixtures/node_modules/commander/lib/command.js:1122:5)

@@ -1,0 +1,5 @@
+[Oct 02 20:40:10] [ERROR] Failed to enter email: Login Error (Username): We couldn't find an account with that username. Try another, or get a new Microsoft account.
+[Oct 02 20:40:10] [ERROR] Authentication failed or cancelled:
+Error: Login Error (Username): We couldn't find an account with that username. Try another, or get a new Microsoft account.
+    at login (/private/var/folders/26/91sqdpnd34d7pn_cby7qg2nw0000gn/T/opencode/msout-fixtures/node_modules/@msout/microsoft-webauth/src/auth.js:1339:27)
+    at async Command.<anonymous> (/private/var/folders/26/91sqdpnd34d7pn_cby7qg2nw0000gn/T/opencode/msout-fixtures/node_modules/@msout/microsoft-webauth/src/index.js:37:9)

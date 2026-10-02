@@ -1,0 +1,2 @@
+[2026-10-02 20:39:18+02:00] [ERROR] --non-interactive requires either --notebook <name> or --notebook-link <url>.
+[2026-10-02 20:39:18+02:00] [ERROR] Without one of them the export would stop at the interactive notebook picker.

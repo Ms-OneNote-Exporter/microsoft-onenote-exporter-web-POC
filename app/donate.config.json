@@ -1,0 +1,13 @@
+{
+  "_comment": "Donation targets, committed to the repository rather than held in environment variables so they are auditable: env vars are mutable at deploy time without leaving a trace in git. Replace the placeholder addresses before deploying anything. See DONATE.md.",
+  "paypal": "https://www.paypal.com/paypalme/PLACEHOLDER",
+  "fiat": [
+    { "label": "PayPal", "href": "https://www.paypal.com/paypalme/PLACEHOLDER" }
+  ],
+  "crypto": [
+    { "symbol": "BTC", "address": "PLACEHOLDER" },
+    { "symbol": "ETH", "address": "PLACEHOLDER" },
+    { "symbol": "SOL", "address": "PLACEHOLDER" },
+    { "symbol": "TAO", "address": "PLACEHOLDER" }
+  ]
+}

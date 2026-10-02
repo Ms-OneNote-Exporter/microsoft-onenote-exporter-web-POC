@@ -1,0 +1,17 @@
+# Only the manifests, the lockfile and the three workspace sources are needed to
+# build. Everything else would bust the Docker layer cache or, worse, ship a
+# developer's live sessions into an image.
+node_modules
+**/node_modules
+**/dist
+data
+data-*
+.git
+.gitignore
+.env
+.env.*
+*.log
+.DS_Store
+reviews
+test
+docs

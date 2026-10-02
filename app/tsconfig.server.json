@@ -6,16 +6,16 @@
     "lib": [
       "ES2022"
     ],
-    "declaration": true,
-    "outDir": "dist/cjs",
-    "rootDir": "src",
+    "outDir": "dist/server",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "sourceMap": true,
+    "rootDir": "src/server"
   },
   "include": [
-    "src/**/*.ts"
+    "src/server/**/*.ts"
   ]
 }

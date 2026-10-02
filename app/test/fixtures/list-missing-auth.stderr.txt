@@ -1,0 +1,5 @@
+[Oct 02 20:39:18] [ERROR] Failed to list notebooks.
+Error: Authentication file not found: /nonexistent/auth.json
+    at getAuthenticatedContextWithFile (/private/var/folders/26/91sqdpnd34d7pn_cby7qg2nw0000gn/T/opencode/msout-fixtures/node_modules/@msout/microsoft-onenote-list-notebooks/src/auth-context.js:17:15)
+    at async listNotebooks (/private/var/folders/26/91sqdpnd34d7pn_cby7qg2nw0000gn/T/opencode/msout-fixtures/node_modules/@msout/microsoft-onenote-list-notebooks/src/list-notebooks.js:170:34)
+    at async Command.<anonymous> (/private/var/folders/26/91sqdpnd34d7pn_cby7qg2nw0000gn/T/opencode/msout-fixtures/node_modules/@msout/microsoft-onenote-list-notebooks/src/index.js:29:31)

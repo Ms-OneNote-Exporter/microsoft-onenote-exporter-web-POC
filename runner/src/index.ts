@@ -136,6 +136,12 @@ export function buildApp(deps: { config: RunnerConfig }) {
     if (!parsed) return reply.code(400).send({ error: 'credentials must be {"email","password"}' });
     const { email, password } = parsed;
 
+    // The sequence this job's output starts after. The app subscribes with it so
+    // it receives this job's lines and not the tail of the previous one: the event
+    // stream is per session, and its ring buffer still holds the last job's
+    // lines including its `end` event.
+    const fromSeq = hub.lastSeq(guid);
+
     try {
       jobs.start({
         guid,
@@ -159,7 +165,7 @@ export function buildApp(deps: { config: RunnerConfig }) {
     }
 
     // 202: the login runs for minutes. The browser watches /events.
-    return reply.code(202).send({ started: true });
+    return reply.code(202).send({ started: true, fromSeq });
   });
 
   app.post('/sessions/:guid/mfa', async (req, reply) => {
@@ -184,6 +190,7 @@ export function buildApp(deps: { config: RunnerConfig }) {
     if (!existsSync(paths.authFile)) {
       return reply.code(409).send({ error: 'no_auth', message: 'auth.json is missing' });
     }
+    const fromSeq = hub.lastSeq(guid);
     try {
       jobs.start({
         guid,
@@ -196,7 +203,7 @@ export function buildApp(deps: { config: RunnerConfig }) {
     } catch (err) {
       return startErrorReply(reply, err);
     }
-    return reply.code(202).send({ started: true });
+    return reply.code(202).send({ started: true, fromSeq });
   });
 
   app.post('/sessions/:guid/export', async (req, reply) => {
@@ -226,6 +233,7 @@ export function buildApp(deps: { config: RunnerConfig }) {
     if (notebookUrl) args.push('--notebook-link', notebookUrl);
     else args.push('--notebook', notebook as string);
 
+    const fromSeq = hub.lastSeq(guid);
     try {
       jobs.start({
         guid,
@@ -238,7 +246,7 @@ export function buildApp(deps: { config: RunnerConfig }) {
     } catch (err) {
       return startErrorReply(reply, err);
     }
-    return reply.code(202).send({ started: true });
+    return reply.code(202).send({ started: true, fromSeq });
   });
 
   app.post('/sessions/:guid/abort', async (req, reply) => {

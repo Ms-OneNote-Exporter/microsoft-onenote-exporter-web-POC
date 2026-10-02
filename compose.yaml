@@ -9,7 +9,10 @@
 services:
   app:
     build:
-      context: ./app
+      # Context is the repo root: the app builds the shared workspace package,
+      # so it needs the root lockfile and all three manifests.
+      context: .
+      dockerfile: app/Dockerfile
     ports:
       - "3000:3000"
     volumes:
@@ -27,7 +30,8 @@ services:
 
   runner:
     build:
-      context: ./runner
+      context: .
+      dockerfile: runner/Dockerfile
     # No `ports:` on purpose. The runner is the process that receives passwords
     # and holds auth.json; nothing outside the compose network may address it.
     volumes:
