@@ -78,12 +78,23 @@ export class SseHub {
     const oldest = s.buffer[0]?.id ?? s.nextId;
     const cursorUsable = lastEventId > 0 && lastEventId >= oldest - 1;
 
+    // Every send is guarded, the backlog replay included. A subscriber that
+    // throws while catching up would otherwise abort the whole subscribe call -
+    // and with it the HTTP handler that was setting the stream up.
+    const guardedSend = (event: AppEvent, id?: number): void => {
+      try {
+        subscriber.send(event, id);
+      } catch {
+        /* the connection is gone; the stream continues for everyone else */
+      }
+    };
+
     if (cursorUsable) {
       for (const entry of s.buffer) {
-        if (entry.id > lastEventId) subscriber.send(entry.event, entry.id);
+        if (entry.id > lastEventId) guardedSend(entry.event, entry.id);
       }
     } else {
-      subscriber.send({ type: 'snapshot', state: state() }, s.nextId - 1);
+      guardedSend({ type: 'snapshot', state: state() }, s.nextId - 1);
     }
 
     const keepalive = setInterval(() => {

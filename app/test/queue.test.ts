@@ -271,7 +271,7 @@ describe('JobQueue', () => {
       const doomed = gated('doomed', log);
       const other = gated('other', log);
 
-      queue.submit(running.request, GUID_A);
+      const dr = queue.submit(running.request, GUID_A).done;
       const d1 = queue.submit(doomed.request, GUID_A).done;
       const d2 = queue.submit(other.request, GUID_B).done;
       // Let the first job claim the running slot, so the two later ones are
@@ -283,6 +283,7 @@ describe('JobQueue', () => {
       await expect(d1).rejects.toThrow('session erased');
 
       running.open();
+      await dr;
       other.open();
       await d2;
       expect(log).not.toContain('start:doomed');
@@ -293,8 +294,12 @@ describe('JobQueue', () => {
       const log: string[] = [];
       const a = gated('a', log);
       const b = gated('b', log);
-      queue.submit(a.request, GUID_A);
+      // A's promise is rejected by the cancel and deliberately not awaited: the
+      // test is about B surviving, and an unhandled rejection would fail the run.
+      const da = queue.submit(a.request, GUID_A).done;
+      void da.catch(() => {});
       const db = queue.submit(b.request, GUID_B).done;
+      await settle();
       queue.cancelQueuedFor(GUID_A);
       expect(queue.hasWorkFor(GUID_B)).toBe(true);
       a.open();
