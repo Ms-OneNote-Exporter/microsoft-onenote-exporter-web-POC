@@ -248,9 +248,17 @@ export async function buildServer(config: AppConfig, service: Service) {
     const queryId = Number.parseInt((req.query as { since?: string }).since ?? '', 10);
     const lastEventId = Number.isFinite(headerId) ? headerId : Number.isFinite(queryId) ? queryId : 0;
 
-    let state;
+    // The session is read *before* any status line is written, and thrown
+    // immediately rather than wrapped in a closure.
+    //
+    // A lazy `state()` looked equivalent and was not: assigning a closure cannot
+    // throw, so the guard never fired, and the first real read happened inside
+    // SseHub.subscribe - after `writeHead(200)`. A 404 for an unknown session
+    // then reached Fastify's error handler with the headers already sent, which
+    // throws ERR_HTTP_HEADERS_SENT, which is an uncaught exception and takes the
+    // process down. It surfaced as a container in a restart loop.
     try {
-      state = () => service.readSession(guid);
+      service.readSession(guid);
     } catch (error) {
       return fail(reply, error);
     }
@@ -267,15 +275,22 @@ export async function buildServer(config: AppConfig, service: Service) {
       reply.raw.write(`${id === undefined ? '' : `id: ${id}\n`}data: ${JSON.stringify(event)}\n\n`);
     };
 
-    const unsubscribe = service.subscribeEvents(guid, lastEventId, state, {
-      send,
-      sendComment: (text) => {
-        if (!reply.raw.writableEnded) reply.raw.write(`: ${text}\n\n`);
-      },
-      close: () => reply.raw.end(),
-    });
-
-    req.raw.on('close', unsubscribe);
+    // From here the status line is already sent, so nothing may throw into
+    // Fastify: it would try to write a second response. Ending the stream is the
+    // only honest thing left to do, and it must not take the process with it.
+    try {
+      const unsubscribe = service.subscribeEvents(guid, lastEventId, () => service.readSession(guid), {
+        send,
+        sendComment: (text) => {
+          if (!reply.raw.writableEnded) reply.raw.write(`: ${text}\n\n`);
+        },
+        close: () => reply.raw.end(),
+      });
+      req.raw.on('close', unsubscribe);
+    } catch (error) {
+      app.log.error({ err: error, guid }, 'event stream failed after the response started');
+      if (!reply.raw.writableEnded) reply.raw.end();
+    }
   });
 
   /* ---------------- artifact ---------------- */

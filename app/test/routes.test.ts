@@ -1,3 +1,4 @@
+import http from 'node:http';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -397,5 +398,75 @@ describe('routes', () => {
       expect(response.statusCode).toBe(200);
       expect(response.body).toContain('UI not built');
     });
+  });
+});
+
+describe('the event stream', () => {
+  /**
+   * Regression: a 404 on this route used to kill the process.
+   *
+   * The route wrote its 200 status line and only then read the session, so a
+   * request for a session that does not exist reached Fastify's error handler
+   * with the headers already sent. That throws ERR_HTTP_HEADERS_SENT, which is
+   * uncaught, and the app died - observed as a container stuck in a restart loop
+   * on first boot, because a stale browser tab reconnects its EventSource.
+   */
+  it('answers 404 for an unknown session instead of taking the process down', async () => {
+    const before = await h.app.inject({ method: 'GET', url: '/healthz' });
+    expect(before.statusCode).toBe(200);
+
+    const response = await h.app.inject({
+      method: 'GET',
+      url: '/api/session/events?guid=3f2a9c1e-7b4d-4e8a-9f01-2c3d4e5f6a7b',
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json().error).toBe('not_found');
+
+    // Still serving afterwards: the process survived, which is the whole point.
+    const after = await h.app.inject({ method: 'GET', url: '/healthz' });
+    expect(after.statusCode).toBe(200);
+  });
+
+  it('answers 400 for a malformed guid rather than opening a stream', async () => {
+    const response = await h.app.inject({ method: 'GET', url: '/api/session/events?guid=nope' });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('opens a stream for a session that exists, starting with a snapshot', async () => {
+    // `inject` would hang on a real stream, so this one goes over a real socket
+    // and closes as soon as the first frame lands.
+    await h.app.inject({ method: 'POST', url: `/api/session?guid=${GUID}` });
+    const server = h.app.server;
+    if (!server.listening) {
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    }
+    const address = server.address();
+    const port = typeof address === 'object' && address ? address.port : 0;
+
+    const chunks: string[] = [];
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        request.destroy();
+        reject(new Error('no snapshot frame within 5s'));
+      }, 5000);
+      const request = http
+        .get(`http://127.0.0.1:${port}/api/session/events?guid=${GUID}`, (response) => {
+          response.setEncoding('utf8');
+          response.on('data', (chunk: string) => {
+            chunks.push(chunk);
+            if (chunks.join('').includes('"type":"snapshot"')) {
+              clearTimeout(timer);
+              request.destroy();
+              resolve();
+            }
+          });
+        })
+        .on('error', reject);
+    });
+
+    // The first frame is a snapshot, so a tab that opens the page has its state
+    // without needing a second request.
+    expect(chunks.join('')).toContain('"type":"snapshot"');
+    expect(chunks.join('')).toContain(GUID);
   });
 });

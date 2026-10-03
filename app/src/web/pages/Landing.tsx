@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { isValidGuid } from '@msout-poc/shared';
+import { api } from '../api';
 
 /**
  * The landing page.
@@ -11,10 +12,37 @@ import { isValidGuid } from '@msout-poc/shared';
 export function Landing({ onNavigate }: { onNavigate: (guid: string) => void }) {
   const [typed, setTyped] = useState('');
   const [generated, setGenerated] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  /** 'copied' | 'selected' | null - what the button should say. */
+  const [copied, setCopied] = useState<'copied' | 'selected' | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const candidate = typed.trim() || generated || '';
   const usable = isValidGuid(candidate);
+
+  /**
+   * Creates the session, then goes to it.
+   *
+   * The POST is what makes the GUID real. Generating it in the browser and
+   * navigating straight to `/s/<guid>` looked fine and was not: nothing had
+   * created the session, so the session page correctly reported "no such
+   * session" - the GUID was a string and nothing more. Same for a GUID pasted in
+   * by hand, which the spec says should open a session.
+   *
+   * The POST is idempotent: an existing session is opened, not reset.
+   */
+  const start = async (guid: string) => {
+    if (starting) return;
+    setStarting(true);
+    setError(null);
+    try {
+      await api.createSession(guid.toLowerCase());
+      onNavigate(guid.toLowerCase());
+    } catch (caught) {
+      setError((caught as Error).message);
+      setStarting(false);
+    }
+  };
 
   const generate = () => {
     // crypto.randomUUID, never a shortened or hand-rolled GUID: 122 bits of
@@ -22,18 +50,33 @@ export function Landing({ onNavigate }: { onNavigate: (guid: string) => void }) 
     const next = crypto.randomUUID();
     setGenerated(next);
     setTyped('');
-    setCopied(false);
+    setCopied(null);
   };
 
+  /**
+   * Copies the GUID, falling back to selecting it.
+   *
+   * `navigator.clipboard` needs transient user activation, so it throws for a
+   * synthetic click, for a denied permission, and in some embedded browsers. In
+   * every one of those cases the previous behaviour was to do nothing visible,
+   * which reads as a broken button. The fallback selects the text instead, so the
+   * user's next keystroke - Cmd-C - does the job.
+   */
   const copy = async () => {
     if (!generated) return;
     try {
       await navigator.clipboard.writeText(generated);
-      setCopied(true);
+      setCopied('copied');
     } catch {
-      // Clipboard access can be denied; the GUID is on screen either way, and the
-      // user can select it by hand.
-      setCopied(false);
+      const node = document.getElementById('generated-guid');
+      if (node) {
+        const range = document.createRange();
+        range.selectNodeContents(node);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+      setCopied('selected');
     }
   };
 
@@ -70,22 +113,39 @@ export function Landing({ onNavigate }: { onNavigate: (guid: string) => void }) 
           <button
             type="button"
             className="primary"
-            disabled={!usable}
-            onClick={() => usable && onNavigate(candidate.toLowerCase())}
+            disabled={!usable || starting}
+            onClick={() => usable && void start(candidate)}
           >
-            Go to my session
+            {starting ? 'Starting…' : 'Go to my session'}
           </button>
         </div>
 
+        {error && (
+          <p className="alert" role="alert">
+            Could not start the session: {error}
+          </p>
+        )}
+
         {generated && (
           <div className="generated">
-            <code>{generated}</code>
+            <code id="generated-guid">{generated}</code>
             <div className="row">
-              <button type="button" onClick={copy} className="secondary small">
-                {copied ? 'Copied' : 'Copy GUID'}
+              <button
+                type="button"
+                onClick={copy}
+                className="secondary small"
+                // Says what happened, so the button is never a dead end.
+                aria-live="polite"
+              >
+                {copied === 'copied' ? 'Copied' : copied === 'selected' ? 'Copy: press ⌘C' : 'Copy GUID'}
               </button>
-              <button type="button" onClick={() => onNavigate(generated)} className="primary small">
-                Go to my session
+              <button
+                type="button"
+                onClick={() => void start(generated)}
+                className="primary small"
+                disabled={starting}
+              >
+                {starting ? 'Starting…' : 'Go to my session'}
               </button>
             </div>
             <p className="warn">
