@@ -470,3 +470,68 @@ describe('the event stream', () => {
     expect(chunks.join('')).toContain(GUID);
   });
 });
+
+describe('the output tree', () => {
+  /**
+   * The route exists so a finished export can be inspected without downloading it.
+   *
+   * The security property is the reason it takes no path: the directory is
+   * derived from the session's own state and re-validated in the walker, so a
+   * caller cannot use this to read outside the session its GUID names.
+   */
+  it('answers with an empty tree for a session that has exported nothing', async () => {
+    await h.app.inject({ method: 'POST', url: `/api/session?guid=${GUID}` });
+    const response = await h.app.inject({
+      method: 'GET',
+      url: `/api/session/tree?guid=${GUID}`,
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    expect(body).toMatchObject({ root: null, pages: 0, assets: 0, truncated: false });
+  });
+
+  it('rejects a malformed guid', async () => {
+    const response = await h.app.inject({ method: 'GET', url: '/api/session/tree?guid=nope' });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('answers 404 for a session that does not exist', async () => {
+    const response = await h.app.inject({
+      method: 'GET',
+      url: '/api/session/tree?guid=3f2a9c1e-7b4d-4e8a-9f01-2c3d4e5f6a7b',
+    });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('ignores a path parameter, because there is nowhere to put one', async () => {
+    // Someone probing for a traversal knob gets the same tree as anyone else.
+    await h.app.inject({ method: 'POST', url: `/api/session?guid=${GUID}` });
+    const plain = await h.app.inject({ method: 'GET', url: `/api/session/tree?guid=${GUID}` });
+    const probed = await h.app.inject({
+      method: 'GET',
+      url: `/api/session/tree?guid=${GUID}&path=../../../../etc`,
+    });
+    expect(probed.statusCode).toBe(200);
+    expect(probed.json()).toEqual(plain.json());
+  });
+
+  it('lists what an export actually wrote', async () => {
+    await h.app.inject({ method: 'POST', url: `/api/session?guid=${GUID}` });
+    // Written where the walker looks, using the layout the app uses.
+    const outDir = join(h.dataRoot, GUID, 'out', 'The Complete Notebook');
+    mkdirSync(join(outDir, 'Section w Medias', 'assets'), { recursive: true });
+    writeFileSync(join(outDir, 'Section w Medias', 'Page.md'), '# Page\n');
+    writeFileSync(join(outDir, 'Section w Medias', 'assets', 'photo.png'), 'xx');
+
+    const response = await h.app.inject({ method: 'GET', url: `/api/session/tree?guid=${GUID}` });
+    expect(response.statusCode).toBe(200);
+    const body = response.json();
+    // No outPath recorded yet, so the output root is shown - which is where the
+    // notebook folder is, one level down.
+    expect(body.pages).toBe(1);
+    expect(body.assets).toBe(1);
+    expect(body.bytes).toBeGreaterThan(0);
+    expect(body.truncated).toBe(false);
+    expect(body.root.name).toBe('out');
+  });
+});

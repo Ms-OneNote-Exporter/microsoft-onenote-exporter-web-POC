@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import type { NotebookRef, SessionState } from '@msout-poc/shared';
+import { ExportTree } from './ExportTree';
 
 /**
  * Block 3: export.
@@ -141,6 +142,20 @@ export function ExportBlock({
             {exportState.partial ? 'Download partial export (.zip)' : 'Download (.zip)'}
           </a>
         </p>
+      )}
+
+      {/* What landed on disk, below the download rather than instead of it: the
+          zip is what you take away, the tree is what you check.
+
+          Not behind a collapsed disclosure. The export has finished, the user is
+          here to find out whether it worked, and making that a second click is a
+          question answered with a control. */}
+      {downloadable && (
+        <div className="tree-panel">
+          <h3>What was exported</h3>
+          {/* Keyed by job id: a second export remounts the panel and refetches. */}
+          <ExportTree key={state.job?.id ?? 'no-job'} guid={guid} />
+        </div>
       )}
     </section>
   );

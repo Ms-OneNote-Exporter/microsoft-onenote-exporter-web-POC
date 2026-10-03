@@ -21,6 +21,7 @@ import {
   judgeLogin,
   newTrace,
 } from './flows';
+import { type ExportTree, buildExportTree } from './export-tree';
 import { JobQueue, type QueueSnapshot } from './queue';
 import { type JobStart, RunnerClient, RunnerError } from './runner-client';
 import { type JobResult, type LineEvent, isEndEvent, isLineEvent } from './runner-events';
@@ -254,6 +255,19 @@ export class Service {
       if (s.export.outPath === relative) return;
       s.export.outPath = relative;
     });
+  }
+
+  /**
+   * The export's output as a browsable tree.
+   *
+   * Returns an empty tree rather than an error when the session has not exported
+   * anything: "nothing yet" is a state the UI renders, not a failure.
+   */
+  async exportTree(guid: string): Promise<ExportTree> {
+    // readSession, not peek: this is only ever called for a session that exists,
+    // and creating on read is what every other read path already does.
+    const state = this.readSession(guid);
+    return buildExportTree(state, this.dataRoot);
   }
 
   private flowContext(guid: string): FlowContext {

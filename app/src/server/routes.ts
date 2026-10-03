@@ -293,6 +293,26 @@ export async function buildServer(config: AppConfig, service: Service) {
     }
   });
 
+  /* ---------------- output tree ---------------- */
+
+  /**
+   * The export's output, as a browsable tree.
+   *
+   * Takes no path parameter. The directory comes from the session's own state,
+   * re-validated inside the walker, so there is nothing here for a caller to
+   * point somewhere else - which is the only way to be sure this route cannot be
+   * used to read a file outside the session it is given a GUID for.
+   */
+  app.get('/api/session/tree', async (req, reply) => {
+    const guid = guidOf(req);
+    if (!guid) return reply.code(400).send({ error: 'bad guid' });
+    try {
+      return await service.exportTree(guid);
+    } catch (error) {
+      return fail(reply, error);
+    }
+  });
+
   /* ---------------- artifact ---------------- */
 
   /**

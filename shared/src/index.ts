@@ -213,6 +213,61 @@ export function newSessionState(guid: string, now: Date, ttlHours: number): Sess
 }
 
 /* ------------------------------------------------------------------ *
+ * The export's output, as a tree
+ * ------------------------------------------------------------------ */
+
+interface TreeBase {
+  name: string;
+  /**
+   * Path relative to the session directory: never absolute, never containing
+   * `..`. Safe to render because it cannot name anything outside the session.
+   */
+  path: string;
+  /** Size of everything in this subtree, in bytes. */
+  bytes: number;
+}
+
+export interface TreeDir extends TreeBase {
+  type: 'dir';
+  /** Files in this directory alone. */
+  fileCount: number;
+  /** Pages (`.md`) in this directory alone. */
+  pageCount: number;
+  /** Attachments in this directory alone, i.e. everything that is not a page. */
+  assetCount: number;
+  /** Empty when the directory was empty, or its walk was cut short. */
+  children: TreeNode[];
+}
+
+export interface TreeFile extends TreeBase {
+  type: 'file';
+}
+
+/**
+ * A discriminated union on `type`, so a renderer that checks `node.type === 'dir'`
+ * gets the counters and the children without optional chaining. `fileCount?: 3` on
+ * a single shape is a shape that is wrong half the time.
+ */
+export type TreeNode = TreeDir | TreeFile;
+
+export interface ExportTree {
+  /** Null when the session has produced no output yet. */
+  root: TreeDir | null;
+  /** True when a limit stopped the walk, so the counts below are a floor. */
+  truncated: boolean;
+  /** Entries visited, at and below the root. */
+  entries: number;
+  bytes: number;
+  pages: number;
+  assets: number;
+  /**
+   * Where the walk started, relative to the session directory. Null when the
+   * export has written nothing.
+   */
+  rootPath: string | null;
+}
+
+/* ------------------------------------------------------------------ *
  * Paths: re-basing a path that came from somewhere else
  * ------------------------------------------------------------------ */
 
