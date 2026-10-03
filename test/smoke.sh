@@ -116,12 +116,17 @@ if grep -q '123456' "$DATA/runner.log" 2>/dev/null; then bad 'the MFA code leake
 if grep -q '123456' "$DATA/$GUID/state.json" 2>/dev/null; then bad 'the code was persisted'; else ok 'nothing persisted in state.json'; fi
 
 say "list notebooks"
+# The preflight check runs first, as a queued job, before the lister. Watch for
+# it explicitly: without it, a broken preflight would look like a slow list.
+(curl -s --max-time 30 "http://127.0.0.1:$APP_PORT/api/session/events?guid=$GUID" \
+  | grep -m1 '"kind":"check"' > "$DATA/check-seen.txt" 2>/dev/null &)
 curl -s -X POST "http://127.0.0.1:$APP_PORT/api/session/list?guid=$GUID" >/dev/null
-for _ in $(seq 1 40); do
+for _ in $(seq 1 60); do
   LIST=$(curl -s "http://127.0.0.1:$APP_PORT/api/session?guid=$GUID")
   printf '%s' "$LIST" | grep -q '"state":"loaded"' && break
   sleep 0.25
 done
+contains "$LIST" '"checkedAt":"' 'the preflight recorded a verdict'
 contains "$LIST" 'Personal' 'notebook names reached the session state'
 contains "$LIST" 'onedote.cloud.microsoft' 'notebook urls reached the session state'
 
@@ -188,6 +193,26 @@ say "export before signing in is refused"
 FRESH="11111111-2222-4333-8444-555555555555"
 curl -s -X POST "http://127.0.0.1:$APP_PORT/api/session?guid=$FRESH" >/dev/null
 check "$(curl -s -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:$APP_PORT/api/session/export?guid=$FRESH" -H 'content-type: application/json' --data '{"notebook":"x"}')" 409 'an unauthenticated export returns 409'
+
+say "an expired session is refused before it can fail obscurely"
+EXPIRED="77777777-7777-4777-8777-777777777777"
+curl -s -X POST "http://127.0.0.1:$APP_PORT/api/session?guid=$EXPIRED" >/dev/null
+# Sign the session in, then make its session expire, then ask for a listing.
+curl -s -X POST "http://127.0.0.1:$APP_PORT/api/session/credentials?guid=$EXPIRED" \
+  -H 'content-type: application/octet-stream' \
+  --data-binary '{"email":"expired@example.invalid","password":"ok"}' >/dev/null
+for _ in $(seq 1 40); do
+  EX=$(curl -s "http://127.0.0.1:$APP_PORT/api/session?guid=$EXPIRED")
+  printf '%s' "$EX" | grep -q '"state":"valid"' && break
+  sleep 0.25
+done
+contains "$EX" '"state":"valid"' 'the second session signed in'
+# Force this one session's preflight to report an expired Microsoft session.
+echo expired > "$DATA/$EXPIRED/fake-check-mode"
+EXPIRED_LIST=$(curl -s -X POST "http://127.0.0.1:$APP_PORT/api/session/list?guid=$EXPIRED")
+contains "$EXPIRED_LIST" 'Sign in again' 'an expired session is told to sign in again'
+contains "$(curl -s "http://127.0.0.1:$APP_PORT/api/session?guid=$EXPIRED")" '"state":"failed"' 'and the session is signed out'
+if [ -f "$DATA/$EXPIRED/auth.json" ]; then bad 'the expired auth.json survived'; else ok 'the expired auth file was deleted'; fi
 
 say "erase"
 curl -s -X DELETE "http://127.0.0.1:$APP_PORT/api/session?guid=$GUID" >/dev/null

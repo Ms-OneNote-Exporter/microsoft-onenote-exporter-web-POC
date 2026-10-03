@@ -23,8 +23,18 @@ export type Signal =
   | { kind: 'mfa-number'; number: string }
   /** Login succeeded. Necessary but not sufficient: auth.json must exist too. */
   | { kind: 'login-success' }
-  /** Login failed. The package still exits 0. */
+  /** Login failed. Since 0.1.9 the CLI also exits 1 and says so. */
   | { kind: 'login-failed' }
+  /**
+   * 0.1.9 reached the signed-in app but the auth file is missing, unparseable
+   * or not a Playwright storage state. New in 0.1.9, and the failure that used
+   * to be reported as a success with nothing usable behind it.
+   */
+  | { kind: 'login-state-unusable'; reason: string }
+  /** `microsoft-webauth check` confirmed the session is live. */
+  | { kind: 'check-authenticated' }
+  /** `check` did not confirm it, with the reason it gives. */
+  | { kind: 'check-not-authenticated'; reason: string }
   /** One page finished exporting. */
   | { kind: 'page-exported' }
   /** Final page count. */
@@ -134,6 +144,20 @@ export function classify(text: string): Signal {
   if (/^Authentication successful!/i.test(line)) return { kind: 'login-success' };
   if (/^Authentication failed or cancelled/i.test(line)) return { kind: 'login-failed' };
 
+  // New in 0.1.9. Checked before the generic failure line because it is the more
+  // specific explanation and both appear on the same run.
+  const unusable = /^Login reached the authenticated interface but the auth file is not usable \(([^)]+)\)/i.exec(line);
+  if (unusable) return { kind: 'login-state-unusable', reason: unusable[1]!.toLowerCase() };
+
+  // --- check -----------------------------------------------------------
+  // `check` became trustworthy at 0.1.9, which is what made the preflight
+  // possible; these are the two lines that carry its verdict.
+  if (/^Authentication file found\. You are authenticated\./i.test(line)) {
+    return { kind: 'check-authenticated' };
+  }
+  const notAuthed = /^Not authenticated \(([^)]+)\)\./i.exec(line);
+  if (notAuthed) return { kind: 'check-not-authenticated', reason: notAuthed[1]!.toLowerCase() };
+
   // --- blocking / abuse ------------------------------------------------
   if (/captcha|verify (that )?you'?re (a )?human|unusual activity/i.test(line)) {
     return { kind: 'captcha-required' };
@@ -238,9 +262,28 @@ export class NotebookCollector {
  * Used when the process ended without a conclusive signal. Signal-derived codes
  * win; this is the fallback, and `unknown` is a legitimate answer here rather
  * than a failure to look harder.
+ *
+ * `kind` matters to the fallback. A non-zero exit used to map to
+ * `export_failed`, which was wrong for a login: before 0.1.9 a login could not
+ * exit non-zero at all, so any code arriving here was an export - and now that
+ * it can, the kind is the only thing that separates the two.
  */
-export function errorFromLines(lines: string[], exitCode: number | null): AppErrorCode {
+export function errorFromLines(
+  lines: string[],
+  exitCode: number | null,
+  kind: 'login' | 'check' | 'list' | 'export' = 'export',
+): AppErrorCode {
   const joined = lines.join('\n');
+
+  // 0.1.9: the app was reached and the auth file is not usable. More specific
+  // than "the login failed", and the one the user can act on.
+  if (/the auth file is not usable \((?:missing|unreadable|malformed)\)/i.test(joined)) {
+    return 'no_auth';
+  }
+  if (/Not authenticated \(expired\)/i.test(joined)) return 'auth_expired';
+  if (/Not authenticated \(stayed_unauthenticated\)/i.test(joined)) return 'auth_expired';
+  if (/Not authenticated \(unverifiable\)/i.test(joined)) return 'auth_unverified';
+  if (/Not authenticated \((?:no_auth_file|unusable_auth_file)\)/i.test(joined)) return 'no_auth';
 
   if (/Authentication file not found:/i.test(joined)) return 'no_auth';
   if (/--non-interactive requires either/i.test(joined)) return 'no_target';
@@ -251,8 +294,10 @@ export function errorFromLines(lines: string[], exitCode: number | null): AppErr
   if (/Unexpected internal failure during the export/i.test(joined)) return 'crashed';
   if (/Export (finished with errors|stopped early)/i.test(joined)) return 'export_partial';
 
-  // Nothing conclusive in the log. An exit code alone is not a diagnosis - and
-  // for a login it is not even evidence of success, since that exits 0 too.
+  // Nothing conclusive in the log, so only the exit code is left. It still is
+  // not a diagnosis - only a failure.
+  if (kind === 'login') return 'bad_credentials';
+  if (kind === 'check') return 'auth_unverified';
   if (exitCode === 2) return 'no_target';
   if (exitCode !== null && exitCode !== 0) return 'export_failed';
   return 'unknown';

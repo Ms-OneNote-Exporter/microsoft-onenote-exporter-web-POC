@@ -124,6 +124,13 @@ export function ExportBlock({
         <p className="alert">Export failed. The log below has the details.</p>
       )}
 
+      {exportState.error === 'auth_expired' && (
+        <p className="alert">
+          Your Microsoft session expired. Sign in again above — an export already downloaded is
+          unaffected.
+        </p>
+      )}
+
       {downloadable && (
         <p>
           <a

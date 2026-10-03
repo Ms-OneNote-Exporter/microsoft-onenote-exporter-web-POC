@@ -75,7 +75,7 @@ describe('fake login', () => {
   it('uses the webauth timestamp format, not the exporter one', async () => {
     const dir = sessionDir();
     const r = await run('login.ts', ['--email', 'a@b.c', '--password', 'x', '--auth-file', join(dir, 'auth.json')]);
-    // Captured from microsoft-webauth@0.1.8: [Oct 02 20:39:57] [INFO] ...
+    // Captured from microsoft-webauth: [Oct 02 20:39:57] [INFO] ...
     expect(r.stdout).toMatch(/^\[Oct \d{2} \d{2}:\d{2}:\d{2}\] \[INFO\]/m);
     expect(r.stdout).not.toMatch(/^\[\d{4}-\d{2}-\d{2}/m);
   });
@@ -89,15 +89,27 @@ describe('fake login', () => {
     expect(existsSync(join(dir, 'auth-meta.json'))).toBe(true);
   });
 
-  it('exits 0 on a failed login, exactly as microsoft-webauth does', async () => {
-    // This is the trap PLAN-v3 §2 is built around. A capture of a real failed
-    // login against a non-existent account also exited 0, so any code that
-    // trusts this exit code is wrong in production too.
+  it('exits 1 on a failed login, as microsoft-webauth has since 0.1.9', async () => {
+    // 0.1.9 closed this: the CLI sets a real exit code. Captured from the
+    // published package against a non-existent account.
     const dir = sessionDir();
     const r = await run('login.ts', ['--email', 'a@b.c', '--password', 'fail', '--auth-file', join(dir, 'auth.json')]);
-    expect(r.code).toBe(0);
+    expect(r.code).toBe(1);
     expect(r.stderr).toContain('Authentication failed or cancelled:');
+    expect(r.stderr).toContain('login failed (exit 1). No usable auth state was saved.');
     expect(existsSync(join(dir, 'auth.json'))).toBe(false);
+  });
+
+  it('fails a login that reached the app but saved nothing usable', async () => {
+    // 0.1.9's new failure mode: it reads the auth file back, and "successful"
+    // became a statement about the disk rather than about two calls that
+    // returned. Before it, this logged a cheerful success with no login behind it.
+    const dir = sessionDir();
+    const r = await run('login.ts', ['--email', 'a@b.c', '--password', 'nolog', '--auth-file', join(dir, 'auth.json')]);
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain('the auth file is not usable (missing)');
+    expect(r.stderr).toContain('Treating this as a failed login');
+    expect(r.stdout).not.toContain('Authentication successful!');
   });
 
   it('prompts for a code with no trailing newline, then accepts it on stdin', async () => {
@@ -118,8 +130,7 @@ describe('fake login', () => {
       stdin: '000000\n',
     });
     expect(r.stderr).toContain('Authentication failed or cancelled:');
-    // Still exit 0: the code being wrong does not change that.
-    expect(r.code).toBe(0);
+    expect(r.code).toBe(1);
     expect(existsSync(authFile)).toBe(false);
   });
 

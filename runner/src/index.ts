@@ -8,8 +8,10 @@ import { type RunnerConfig, cliEntry, loadConfig } from './config';
 import { EventHub } from './events';
 import { JobBusyError, JobManager, SpawnError } from './jobs';
 
-const PKGS: Record<'login' | 'list' | 'export', string> = {
+const PKGS: Record<'login' | 'check' | 'list' | 'export', string> = {
+  // `check` runs from the same binary as `login`: `microsoft-webauth check`.
   login: '@msout/microsoft-webauth',
+  check: '@msout/microsoft-webauth',
   list: '@msout/microsoft-onenote-list-notebooks',
   export: '@msout/microsoft-onenote-export-notebook',
 };
@@ -21,7 +23,7 @@ const CREDENTIAL_BODY_LIMIT = 4096;
  * Resolves a fake CLI script for both execution modes: `tsc` output is `.js` in
  * dist/, while `tsx` runs the `.ts` sources directly.
  */
-function resolveScript(name: 'login' | 'list' | 'export'): string {
+function resolveScript(name: 'login' | 'check' | 'list' | 'export'): string {
   const js = join(__dirname, 'fake', `${name}.js`);
   return existsSync(js) ? js : join(__dirname, 'fake', `${name}.ts`);
 }
@@ -33,7 +35,16 @@ function resolveScript(name: 'login' | 'list' | 'export'): string {
  * version in package.json decides where the entry point is. In fake mode it is
  * the local stand-in that emits the same log lines.
  */
-function entryFor(config: RunnerConfig, kind: 'login' | 'list' | 'export'): string {
+/**
+ * The command to execute for a job kind.
+ *
+ * `kind` is the single argument, deliberately: the check used to be spawned with
+ * the login's entry point, which happens to be the same binary in production -
+ * `microsoft-webauth login` and `microsoft-webauth check` - so the bug was
+ * invisible against the real package and only showed up in fake mode, where the
+ * two resolve to different scripts and the check silently performed a login.
+ */
+function entryFor(config: RunnerConfig, kind: 'login' | 'check' | 'list' | 'export'): string {
   return isFakeMode(config) ? resolveScript(kind) : cliEntry(PKGS[kind]);
 }
 
@@ -165,6 +176,39 @@ export function buildApp(deps: { config: RunnerConfig }) {
     }
 
     // 202: the login runs for minutes. The browser watches /events.
+    return reply.code(202).send({ started: true, fromSeq });
+  });
+
+  /**
+   * Asks Microsoft whether the saved session is still live.
+   *
+   * Only usable since 0.1.9: before it, `check` reported success for a dead
+   * session. It costs a browser launch and a page load, so the app calls it as a
+   * preflight rather than before every action, and the verdict is only worth
+   * what the exit code and the two log lines say - both of which 0.1.9 fixed.
+   */
+  app.post('/sessions/:guid/check', async (req, reply) => {
+    const { guid } = req.params as { guid: string };
+    const paths = safePaths(config, guid);
+    if (!paths) return reply.code(400).send({ error: 'bad guid' });
+    if (jobs.busy) return busyReply(reply, jobs);
+    if (!existsSync(paths.authFile)) {
+      return reply.code(409).send({ error: 'no_auth', message: 'auth.json is missing' });
+    }
+
+    const fromSeq = hub.lastSeq(guid);
+    try {
+      jobs.start({
+        guid,
+        kind: 'check',
+        command: process.execPath,
+        args: [entryFor(config, 'check'), 'check', '--auth-file', paths.authFile],
+        cwd: paths.dir,
+        timeoutMs: config.checkTimeoutMs,
+      });
+    } catch (err) {
+      return startErrorReply(reply, err);
+    }
     return reply.code(202).send({ started: true, fromSeq });
   });
 

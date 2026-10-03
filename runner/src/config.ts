@@ -15,6 +15,8 @@ export interface RunnerConfig {
   loginTimeoutMs: number;
   exportTimeoutMs: number;
   listTimeoutMs: number;
+  /** A preflight check launches a browser and loads OneNote, so it gets its own budget. */
+  checkTimeoutMs: number;
   /** Grace period between SIGTERM and SIGKILL on abort. */
   abortGraceMs: number;
   /** 500 lines per session: enough for a full MFA challenge, cheap in memory. */
@@ -72,6 +74,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): RunnerConfig {
     loginTimeoutMs: int(env, 'LOGIN_TIMEOUT_MS', 15 * 60_000),
     exportTimeoutMs: int(env, 'EXPORT_TIMEOUT_MS', 90 * 60_000),
     listTimeoutMs: int(env, 'LIST_TIMEOUT_MS', 5 * 60_000),
+    checkTimeoutMs: int(env, 'CHECK_TIMEOUT_MS', 2 * 60_000),
     abortGraceMs: int(env, 'ABORT_GRACE_MS', 10_000),
     ringSize: int(env, 'LOG_RING_SIZE', 500),
     fake: bool(env, 'MSOUT_FAKE'),

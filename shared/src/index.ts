@@ -85,7 +85,15 @@ export type ExportState =
   | 'failed'
   | 'aborted';
 export type JobState = 'queued' | 'running' | 'ended';
-export type JobKind = 'login' | 'list' | 'export';
+/**
+ * `check` is `microsoft-webauth check`: it asks Microsoft whether the saved
+ * session is still live. It exists because 0.1.9 made it trustworthy - it waits
+ * for either the signed-in app or a login redirect, exits 1 when it cannot
+ * confirm, and only deletes the auth file when Microsoft says expired. Before
+ * that, a check could report success for a dead session, which is why the POC
+ * deferred it entirely.
+ */
+export type JobKind = 'login' | 'check' | 'list' | 'export';
 export type MfaKind = null | 'code' | 'number';
 
 /** The MFA code/number the user is being asked for, if any. */
@@ -127,7 +135,17 @@ export interface SessionState {
   auth: {
     state: AuthState;
     email: string | null;
+    /** When the session last proved itself. */
     at: string | null;
+    /**
+     * When `microsoft-webauth check` last confirmed the session with Microsoft.
+     *
+     * The preflight costs a browser launch and a page load, so it is not run
+     * before every operation: a verdict younger than the preflight TTL is
+     * treated as still current. Null means "never confirmed", which is the state
+     * a login leaves behind.
+     */
+    checkedAt: string | null;
   };
   mfa: MfaState;
   notebooks: {
@@ -157,7 +175,7 @@ export function newSessionState(guid: string, now: Date, ttlHours: number): Sess
     guid,
     createdAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + ttlHours * 3600_000).toISOString(),
-    auth: { state: 'none', email: null, at: null },
+    auth: { state: 'none', email: null, at: null, checkedAt: null },
     mfa: { kind: null, number: null, askedAt: null },
     notebooks: { state: 'idle', items: [], error: null },
     export: {
@@ -193,6 +211,8 @@ export type AppErrorCode =
   | 'captcha_required'
   | 'microsoft_blocked'
   | 'notebook_not_found'
+  | 'auth_expired'
+  | 'auth_unverified'
   | 'no_target'
   | 'export_failed'
   | 'export_partial'
@@ -211,6 +231,9 @@ export const ERROR_TEXT: Record<AppErrorCode, string> = {
   captcha_required: 'Microsoft is asking this server to prove it is human. Try again later, or use the local CLI exporter.',
   microsoft_blocked: 'Microsoft has blocked this server address. Try again later, or use the local CLI exporter.',
   notebook_not_found: 'That notebook is no longer in the list. List notebooks again and pick one.',
+  auth_expired: 'Your Microsoft session has expired. Sign in again - your exports are still here.',
+  auth_unverified:
+    'This server could not confirm your Microsoft session. This is usually a network problem, not a dead session - try again.',
   no_target: 'No notebook was given to export.',
   export_failed: 'The export failed. See the log.',
   export_partial: 'The export finished with errors. What was written is downloadable, but incomplete.',

@@ -9,7 +9,7 @@ import { LineReader } from './line-reader';
 export class JobBusyError extends Error {
   constructor(
     readonly activeGuid: string,
-    readonly activeKind: 'login' | 'list' | 'export',
+    readonly activeKind: 'login' | 'check' | 'list' | 'export',
   ) {
     super(`a ${activeKind} job is already running for another session`);
     this.name = 'JobBusyError';
@@ -26,7 +26,7 @@ export class SpawnError extends Error {
 
 export interface JobRequest {
   guid: string;
-  kind: 'login' | 'list' | 'export';
+  kind: 'login' | 'check' | 'list' | 'export';
   /** Executable. Always `process.execPath` in practice - see index.ts. */
   command: string;
   args: string[];
@@ -37,7 +37,7 @@ export interface JobRequest {
 
 interface ActiveJob {
   guid: string;
-  kind: 'login' | 'list' | 'export';
+  kind: 'login' | 'check' | 'list' | 'export';
   child: ChildProcess;
   startedAt: number;
   timeoutTimer: NodeJS.Timeout;

@@ -124,6 +124,17 @@ export class RunnerClient {
     });
   }
 
+  /**
+   * Asks Microsoft whether the saved session is still live.
+   *
+   * Only meaningful since 0.1.9, when `check` stopped reporting success for a
+   * dead session; before that this call would have rubber-stamped an expired
+   * login, which is why the preflight did not exist at all.
+   */
+  async check(guid: string): Promise<JobStart> {
+    return this.start(`/sessions/${guid}/check`, { method: 'POST' });
+  }
+
   async list(guid: string): Promise<JobStart> {
     return this.start(`/sessions/${guid}/list`, { method: 'POST' });
   }

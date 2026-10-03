@@ -53,7 +53,7 @@ export function newSessionState(guid, now, ttlHours) {
         guid,
         createdAt: now.toISOString(),
         expiresAt: new Date(now.getTime() + ttlHours * 3600_000).toISOString(),
-        auth: { state: 'none', email: null, at: null },
+        auth: { state: 'none', email: null, at: null, checkedAt: null },
         mfa: { kind: null, number: null, askedAt: null },
         notebooks: { state: 'idle', items: [], error: null },
         export: {
@@ -76,6 +76,8 @@ export const ERROR_TEXT = {
     captcha_required: 'Microsoft is asking this server to prove it is human. Try again later, or use the local CLI exporter.',
     microsoft_blocked: 'Microsoft has blocked this server address. Try again later, or use the local CLI exporter.',
     notebook_not_found: 'That notebook is no longer in the list. List notebooks again and pick one.',
+    auth_expired: 'Your Microsoft session has expired. Sign in again - your exports are still here.',
+    auth_unverified: 'This server could not confirm your Microsoft session. This is usually a network problem, not a dead session - try again.',
     no_target: 'No notebook was given to export.',
     export_failed: 'The export failed. See the log.',
     export_partial: 'The export finished with errors. What was written is downloadable, but incomplete.',

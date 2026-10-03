@@ -48,7 +48,7 @@ they want, downloads a zip, and erases the session.* Nothing more.
 | State | `/data/<guid>/state.json`, read/written by the app |
 | Credential flow | Browser → app → runner; app proxies the body without parsing |
 | MFA | Both kinds: code via child **stdin**, number-match via **log scrape** |
-| Auth validity | `auth.json` existence + log evidence; optional `webauth check` preflight |
+| Auth validity | `auth.json` + success line + exit 0, **plus a `webauth check` preflight** before list and export |
 | Notebook selection | Prefer `--notebook-link <url>` from the list output |
 | Export | `--non-interactive --notebook-link … --output-dir /data/<guid>/out` |
 | Interrupt | `SIGTERM` to the child, then `SIGKILL` after a grace period |
@@ -74,7 +74,7 @@ is the honest price of the POC, and it is the reference for the v2 build order.
 | `login({promptCode, onEvent, signal})` | CLI prompts on a readline over `process.stdin` | Pipe stdin, write the code + `\n` | Works. Readline is TTY-agnostic. |
 | Challenge events | No events; the prompt text is the only signal | Match `Enter the verification code: ` on stdout | Brittle to wording changes in the package |
 | Number-match display | Log line `Enter the number:  123456` | Scrape the line, show the number, wait passively | Same brittleness |
-| **Login exit code** | `login()` catches everything and logs; **exit status stays 0** on failure (`auth.js:1577-1580`, no `process.exit`) | Success = `auth.json` exists **and** `Authentication successful!` seen | **A success/failure decision made from a log line** |
+| **Login exit code** | *Fixed upstream in 0.1.9.* Before it, `login()` caught everything and exited 0; the exit status is now meaningful and 1 means failure | Success = `auth.json` exists **and** `Authentication successful!` seen **and** exit 0 | Belt and braces rather than a workaround: the rule was correct when the package was broken and is kept because being stricter than necessary is free |
 | Structured error codes | None exist | Map log text + exit code to a small enum | New errors look like `unknown` |
 | `signal` on export | No cancellation API | `SIGTERM` → 10 s → `SIGKILL` | Files written mid-abort may be truncated |
 | `onEvent` progress | No events | Parse `Exporting: <page> ...` | **No denominator** — counter only, no percentage |
@@ -83,9 +83,10 @@ is the honest price of the POC, and it is the reference for the v2 build order.
 
 Two of these deserve emphasis because they are not merely "less polished":
 
-- **A zero exit code does not mean login succeeded.** Any POC code that trusts
-  the exit status of `microsoft-webauth login` is broken. The check is
-  `auth.json` present **and** the success line observed.
+- **A zero exit code did not mean login succeeded** — until 0.1.9 fixed it. The
+  rule here is unchanged anyway: success requires `auth.json` **and** the success
+  line **and** exit 0. That was the only defence when the package was broken;
+  now it is defence in depth, and it costs nothing.
 - **There is no clean stop.** v2's "interrupt preserves partial output" was a
   library guarantee. Here it is an empirical property: the child is killed, and
   whatever Markdown was written before that is what the user gets, labelled
@@ -213,7 +214,7 @@ microsoft-onenote-exporter-web/
 
 ```jsonc
 "dependencies": {
-  "@msout/microsoft-webauth":              "0.1.8",
+  "@msout/microsoft-webauth":              "0.1.9",
   "@msout/microsoft-onenote-list-notebooks": "0.0.7",
   "@msout/microsoft-onenote-export-notebook": "0.3.7"
 }
@@ -332,11 +333,27 @@ model, which holds because we did not need a package change to get it.
 const ok = existsSync(authFile) && sawLine("Authentication successful!");
 ```
 
-`webauth check --auth-file …` is available as an optional preflight. Its own
-exit code is also always 0, so it is read by scraping
-`Authentication file found. You are authenticated.` — and note that on a dead
-session `checkAuth()` **deletes** the auth file (`auth.js:1622-1625`), which the
-UI must present as "your session expired, please sign in again", not as an error.
+**Auth-expiry preflight.** `microsoft-webauth check --auth-file …` runs before
+every list and export, with its verdict cached for five minutes.
+
+This could not be built before 0.1.9, and the reason is worth recording because
+it is the same shape as the exit-code bug: the old `check` waited a fixed two
+seconds and asked whether the URL happened to be a login host, so an empty auth
+file read as signed in. 0.1.9 waits for either the signed-in app or a login
+redirect, exits 1 when it cannot confirm, and only deletes the auth file when
+Microsoft itself says the session expired.
+
+Its three outcomes are kept apart, because conflating them would be worse than
+the ambiguity it removes:
+
+| Verdict | What the app does |
+|---|---|
+| authenticated | stamps `auth.checkedAt`; the next operation inside the cache window skips the check |
+| expired / stayed_unauthenticated / no auth file | signs the session out, brings the auth block back, emits `auth-expired`; existing exports stay downloadable |
+| unverifiable (network, timeout) | **proceeds anyway** — the check failing is not evidence the session is bad |
+
+The last row is the one that matters. A preflight that refused to export on a DNS
+blip would introduce a new failure mode instead of removing an old one.
 
 ### 6.2 List notebooks
 
@@ -687,7 +704,7 @@ Manual (`test/e2e.md`):
 | Caddy, TLS, HSTS | local network, operator's responsibility |
 | Layered rate limits, Microsoft-block detection UX | no abuse control by decision |
 | GUID + 256-bit secret cookie | POC; carried as a launch blocker from PLAN-v2 §13.1 |
-| Auth-expiry preflight | cheap (`webauth check`), scheduled as a stretch after step 3 |
+| ~~Auth-expiry preflight~~ | **done** — implemented once 0.1.9 made `check` trustworthy |
 | Memory watchdog at 80 % of cgroup limit | cgroup `--memory` is the POC's guard |
 | Deploy drain / maintenance banner | single box, operator-driven restarts |
 | Journal-mode copy-on-write / LUKS erase | POC erase is `rm -rf`, stated as such |
@@ -702,7 +719,7 @@ not.
 | Limitation | Consequence | v2 fix |
 |---|---|---|
 | Password in the runner's argv for the login duration | Visible to anything inside that container | package change: env / fd / file |
-| All success/failure detection is log parsing | A package reword breaks it silently | structured events + exit codes |
+| All success/failure detection is log parsing | A package reword breaks it silently | structured events (PLAN-v2 §6) |
 | No cooperative abort; `SIGTERM` may truncate a file | Partial artifacts can contain half-written markdown | `signal` in the package |
 | Progress has no denominator | No percentage bar | `onEvent` counts |
 | Global concurrency 1 | One long export stalls every other session | pool + per-session runners |

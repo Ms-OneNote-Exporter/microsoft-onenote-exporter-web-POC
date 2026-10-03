@@ -19,7 +19,7 @@
 
 /** How a child process ended. */
 export interface JobResult {
-  kind: 'login' | 'list' | 'export';
+  kind: 'login' | 'check' | 'list' | 'export';
   /** Exit code, or null when the process died from a signal. */
   code: number | null;
   signal: string | null;

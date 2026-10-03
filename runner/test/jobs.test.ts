@@ -203,7 +203,7 @@ describe('JobManager', () => {
       expect(h.ends()[0]!.result).toMatchObject({ kind: 'login', code: 0, aborted: false, timedOut: false });
     });
 
-    it('captures the failure on stderr and still reports exit code 0', async () => {
+    it('captures a failed login on stderr and reports its non-zero exit code', async () => {
       const h = harness();
       h.jobs.start({
         guid: GUID,
@@ -215,10 +215,34 @@ describe('JobManager', () => {
       });
 
       await h.waitFor(() => h.ends().length === 1, 'login to end');
-      // The trap, end to end through a real process: the failure is only visible
-      // in the log, and the exit code says success.
-      expect(h.ends()[0]!.result.code).toBe(0);
-      expect(h.lines('stderr').join('\n')).toContain('Authentication failed or cancelled:');
+      // Since 0.1.9 a failed login exits 1 and says so on the last line. The
+      // POC does not *rely* on this - success still needs the auth file and the
+      // success line - but the code is now a fact rather than a quirk.
+      expect(h.ends()[0]!.result.code).toBe(1);
+      const err = h.lines('stderr').join('\n');
+      expect(err).toContain('Authentication failed or cancelled:');
+      expect(err).toContain('login failed (exit 1). No usable auth state was saved.');
+    });
+
+    it('captures the 0.1.9 failure mode where the app was reached but nothing usable was saved', async () => {
+      // The case that used to report a cheerful success with an unusable login
+      // behind it: 0.1.9 reads the auth file back and treats this as a failure.
+      const h = harness();
+      h.jobs.start({
+        guid: GUID,
+        kind: 'login',
+        command: process.execPath,
+        args: [...TSX_ARGS, fakeScript('login'), '--email', 'a@b.c', '--password', 'nolog', '--auth-file', join(h.config.dataRoot, GUID, 'auth.json')],
+        cwd: h.config.dataRoot,
+        timeoutMs: 20_000,
+      });
+
+      await h.waitFor(() => h.ends().length === 1, 'login to end');
+      expect(h.ends()[0]!.result.code).toBe(1);
+      expect(h.lines('stderr').join('\n')).toContain('the auth file is not usable (missing)');
+      // The success line must be absent, or the app would believe a login that
+      // left nothing to log in with.
+      expect(h.lines('stdout').join('\n')).not.toContain('Authentication successful!');
     });
 
     it('reports a non-zero exit code when the package uses one', async () => {

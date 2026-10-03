@@ -111,10 +111,23 @@ browser ──► app ──► runner ──► microsoft-webauth / list-notebo
 
 Three decisions worth knowing before reading the code:
 
-**A login is never judged by its exit code.** `microsoft-webauth` catches its own
-failures and exits 0 — verified against a real capture, see
-`app/test/fixtures/login-failed.*`. Success is `auth.json` existing *and* the
-success line having been seen. `app/src/server/flows.ts` is where that rule lives.
+**A login is judged on three signals, not one.** Success needs `auth.json` on
+disk, the success line in the log, **and** exit 0 — the rule lives in
+`app/src/server/flows.ts`.
+
+That was written when `microsoft-webauth@0.1.8` exited 0 on a *failed* login:
+verified against a real capture, now kept as `login-failed-0.1.9.*` beside the
+0.1.9 one. `0.1.9` fixed the exit code, and the rule stayed — being stricter than
+necessary is free, and trusting a package's idea of what exit 0 means is how a
+session ends up believing it is signed in when it is not.
+
+**An expired Microsoft session is caught before it produces a mystery.**
+`microsoft-webauth check` runs before every list and export. That was only
+possible from 0.1.9: before it, `check` waited a fixed two seconds and asked
+whether the URL happened to be a login host, so an *empty* auth file read as
+signed in. Its verdict is cached for five minutes, and the three outcomes are
+kept apart — an unverifiable check (usually the network) lets the operation
+proceed rather than signing you out for a DNS blip.
 
 **Credentials are proxied as bytes.** The browser builds the body; the app
 forwards it untouched with a pass-through content-type parser; only the runner

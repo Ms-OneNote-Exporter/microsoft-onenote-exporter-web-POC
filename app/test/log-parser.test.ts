@@ -25,7 +25,8 @@ function fixture(name: string): string[] {
 
 describe('parseLine', () => {
   it('parses the webauth and list-notebooks timestamp format', () => {
-    // Captured from microsoft-webauth@0.1.8.
+    // Captured from microsoft-webauth@0.1.8, and still true at 0.1.9: the
+    // month-name timestamp format did not change.
     const p = parseLine('[Oct 02 20:39:57] [INFO] Attempting automated login for a@b.c...');
     expect(p).toMatchObject({ level: 'info', text: 'Attempting automated login for a@b.c...', prefixed: true });
   });
@@ -98,6 +99,53 @@ describe('classify', () => {
 
   it('detects login failure', () => {
     expect(classify('Authentication failed or cancelled:')).toEqual({ kind: 'login-failed' });
+  });
+
+  describe('0.1.9 additions', () => {
+    it('detects a login that reached the app but saved nothing usable', () => {
+      expect(
+        classify(
+          'Login reached the authenticated interface but the auth file is not usable (malformed): /data/x/auth.json has no "cookies" array',
+        ),
+      ).toEqual({ kind: 'login-state-unusable', reason: 'malformed' });
+    });
+
+    it.each(['missing', 'unreadable', 'malformed'])('carries the reason %s through', (reason) => {
+      expect(
+        classify(`Login reached the authenticated interface but the auth file is not usable (${reason}): detail`),
+      ).toEqual({ kind: 'login-state-unusable', reason });
+    });
+
+    it('detects a confirmed check', () => {
+      expect(classify('Authentication file found. You are authenticated.')).toEqual({
+        kind: 'check-authenticated',
+      });
+    });
+
+    it.each([
+      'expired',
+      'stayed_unauthenticated',
+      'unverifiable',
+      'no_auth_file',
+      'unusable_auth_file',
+    ])('carries the check reason %s through', (reason) => {
+      expect(classify(`Not authenticated (${reason}). some detail here`)).toEqual({
+        kind: 'check-not-authenticated',
+        reason,
+      });
+    });
+
+    it('does not confuse the check verdict with a login success', () => {
+      // "authenticated" appears in both worlds; only one of them is a login.
+      expect(classify('Authentication file found. You are authenticated.').kind).toBe('check-authenticated');
+      expect(classify('Authentication successful! State saved to /data/x').kind).toBe('login-success');
+    });
+
+    it('ignores the check summary line, which is not itself a verdict', () => {
+      expect(
+        classify('check failed (exit 1). No authenticated session could be confirmed.').kind,
+      ).toBe('none');
+    });
   });
 
   it('counts a finished page', () => {
@@ -280,6 +328,40 @@ describe('errorFromLines', () => {
     expect(errorFromLines(['Authentication failed or cancelled:'], 0)).toBe('bad_credentials');
   });
 
+  it('does not report an export failure for a login that merely exited non-zero', () => {
+    // The fallback is kind-aware. A non-zero exit meant "export" back when only
+    // exports could exit non-zero; now that a login can, the kind is the only
+    // thing separating the two.
+    expect(errorFromLines([], 1, 'login')).toBe('bad_credentials');
+    expect(errorFromLines([], 1, 'export')).toBe('export_failed');
+    expect(errorFromLines([], 1, 'check')).toBe('auth_unverified');
+  });
+
+  it('maps each check reason to the advice it needs', () => {
+    // `expired` and `stayed_unauthenticated` both mean sign in again.
+    // `unverifiable` must not: the check itself failed, usually the network.
+    expect(errorFromLines(['Not authenticated (expired). redirected'], 1, 'check')).toBe('auth_expired');
+    expect(
+      errorFromLines(['Not authenticated (stayed_unauthenticated). never rendered'], 1, 'check'),
+    ).toBe('auth_expired');
+    expect(
+      errorFromLines(['Not authenticated (unverifiable). net::ERR_TIMED_OUT'], 1, 'check'),
+    ).toBe('auth_unverified');
+    expect(errorFromLines(['Not authenticated (no_auth_file). does not exist'], 1, 'check')).toBe('no_auth');
+  });
+
+  it('maps the 0.1.9 unusable-auth-file failure to no_auth', () => {
+    // Not `bad_credentials`: the credentials were accepted, there was simply
+    // nothing to log in with afterwards.
+    expect(
+      errorFromLines(
+        ['Login reached the authenticated interface but the auth file is not usable (missing): x'],
+        1,
+        'login',
+      ),
+    ).toBe('no_auth');
+  });
+
   it('returns unknown when nothing conclusive was logged', () => {
     expect(errorFromLines(['something entirely unexpected'], 0)).toBe('unknown');
   });
@@ -292,15 +374,26 @@ describe('errorFromLines', () => {
 
 describe('captured output', () => {
   it('parses every line of the real failed-login stdout', () => {
-    const lines = fixture('login-failed.stdout.txt');
+    const lines = fixture('login-failed-0.1.9.stdout.txt');
     const parsed = lines.map(parseLine);
     expect(parsed.every((p) => p.prefixed)).toBe(true);
-    expect(parsed[0]!.text).toContain('Authentication Module: v0.1.8 starting...');
+    // The version line is how this fixture proves which package it came from.
+    expect(parsed[0]!.text).toContain('Authentication Module: v0.1.9 starting...');
     expect(parsed.some((p) => p.text.includes('Attempting automated login for'))).toBe(true);
   });
 
+  it('reads the closing line 0.1.9 added to a failed login', () => {
+    const lines = fixture('login-failed-0.1.9.stderr.txt');
+    const last = parseLine(lines.at(-1)!);
+    expect(last.level).toBe('error');
+    expect(last.text).toMatch(/login failed \(exit 1\)/);
+    // It is a summary, not a new failure mode: the diagnosis is still in the
+    // lines above it.
+    expect(classify(last.text).kind).toBe('none');
+  });
+
   it('classifies the real failed-login stderr, stack lines included', () => {
-    const lines = fixture('login-failed.stderr.txt');
+    const lines = fixture('login-failed-0.1.9.stderr.txt');
     // Real output, in order: a specific failure, then the generic
     // "Authentication failed or cancelled:", then the thrown Error and its stack.
     expect(classify(parseLine(lines[0]!).text)).toEqual({ kind: 'none' });
@@ -314,8 +407,8 @@ describe('captured output', () => {
     // The assertion the exit-code trap demands: a failed login must never be
     // readable as a success, whichever stream is consulted.
     const all = [
-      ...fixture('login-failed.stdout.txt'),
-      ...fixture('login-failed.stderr.txt'),
+      ...fixture('login-failed-0.1.9.stdout.txt'),
+      ...fixture('login-failed-0.1.9.stderr.txt'),
     ].map((l) => classify(parseLine(l).text).kind);
     expect(all).not.toContain('login-success');
     expect(all).toContain('login-failed');

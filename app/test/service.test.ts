@@ -38,7 +38,10 @@ class FakeRunner {
   readonly rawBodies: string[] = [];
   private readonly scripts = new Map<number, Script>();
   private next = 0;
-  private runningKind: 'login' | 'list' | 'export' = 'login';
+  private runningKind: 'login' | 'check' | 'list' | 'export' = 'login';
+  /** How many jobs have started; also the cursor into the staged scripts. */
+  private cursor = 0;
+  private activeScript: Script | undefined;
   private pendingSeq = 1;
   /** Events already emitted for a session, replayed to a late subscriber. */
   private readonly transcript = new Map<string, RunnerEvent[]>();
@@ -46,7 +49,15 @@ class FakeRunner {
 
   constructor(private readonly dataRoot: string) {}
 
-  /** Stages the next job. */
+  /**
+   * Stages the script for the next job to start.
+   *
+   * A cursor advances per job started, so three staged scripts drive three
+   * consecutive jobs. Reading the last-staged script for every job - which is
+   * what `scripts.get(this.next)` does - passes when a test stages exactly one
+   * script and silently mis-runs when it stages more: the check's script gets
+   * replayed as the export that follows it.
+   */
   script(script: Script): this {
     this.scripts.set(++this.next, script);
     return this;
@@ -99,6 +110,62 @@ class FakeRunner {
 
   scriptExportSuccess(pages = 3): this {
     return this.scriptExport(pages, false);
+  }
+
+  /**
+   * Stages a `microsoft-webauth check` run.
+   *
+   * `verdict` is one of `authenticated`, `expired`, `stale`, `unverifiable`,
+   * `missing`. These are 0.1.9's outcomes, and they are deliberately distinct:
+   * the preflight's whole job is to tell "sign in again" apart from "the check
+   * itself failed", and a fake that only knew success/failure would not exercise
+   * the distinction that makes it worth having.
+   */
+  scriptCheck(
+    verdict:
+      | 'authenticated'
+      | 'expired'
+      | 'stayed_unauthenticated'
+      | 'unverifiable'
+      | 'no_auth_file' = 'authenticated',
+  ): this {
+    // The reason strings are 0.1.9's own: the app matches on them, so a fake
+    // that invented its own would test the wrong thing.
+    const detail: Record<string, string> = {
+      authenticated: '',
+      expired: 'the session was redirected to login.live.com; stale auth state deleted',
+      stayed_unauthenticated:
+        'the signed-in interface never rendered and the session was never sent to a login page; the auth file was left in place',
+      unverifiable: 'could not verify the session (net::ERR_TIMED_OUT); the auth file was left in place',
+      no_auth_file: `${GUID}/auth.json does not exist`,
+    };
+    const lines: Script['lines'] = [
+      { stream: 'stdout', text: '[Oct 03 09:00:00] [DEBUG] Verifying authentication session...' },
+    ];
+    if (verdict === 'authenticated') {
+      lines.push({
+        stream: 'stdout',
+        text: '[Oct 03 09:00:04] [SUCCESS] Authentication file found. You are authenticated.',
+      });
+      return this.script({ lines, result: { kind: 'check', code: 0 } });
+    }
+    lines.push(
+      { stream: 'stderr', text: `[Oct 03 09:00:04] [ERROR] Not authenticated (${verdict}). ${detail[verdict]}` },
+      { stream: 'stderr', text: '[Oct 03 09:00:04] [ERROR] Run "login" first.' },
+      {
+        stream: 'stderr',
+        text: '[Oct 03 09:00:04] [ERROR] check failed (exit 1). No authenticated session could be confirmed. See the reason above.',
+      },
+    );
+    // `expired` is the only verdict that deletes the auth file, which is what the
+    // service has to notice.
+    if (verdict === 'expired') this.removeAuthFile();
+    return this.script({ lines, result: { kind: 'check', code: 1 } });
+  }
+
+  /** Deletes the auth file, as `check` does on an expired verdict. */
+  removeAuthFile(): void {
+    rmSync(join(this.dataRoot, GUID, 'auth.json'), { force: true });
   }
 
   scriptListSuccess(): this {
@@ -168,6 +235,11 @@ class FakeRunner {
       mfa: async (guid: string, code: string) => {
         self.calls.push({ op: 'mfa', args: [guid, code] });
       },
+      check: async (guid: string) => {
+        self.calls.push({ op: 'check', args: [guid] });
+        self.begin(guid, 'check');
+        return { fromSeq: 0 };
+      },
       list: async (guid: string) => {
         self.calls.push({ op: 'list', args: [guid] });
         self.begin(guid, 'list');
@@ -202,8 +274,9 @@ class FakeRunner {
   }
 
   /** Marks a job as started and records its lines for later replay. */
-  private begin(guid: string, kind: 'login' | 'list' | 'export'): void {
-    const script = this.scripts.get(this.next);
+  private begin(guid: string, kind: 'login' | 'check' | 'list' | 'export'): void {
+    const script = this.scripts.get(++this.cursor);
+    this.activeScript = script;
     if (!script) return;
     this.runningKind = kind;
     const events: RunnerEvent[] = [];
@@ -227,7 +300,8 @@ class FakeRunner {
 
   /** Ends the running job with the staged result. */
   endJob(guid: string, overrides: Partial<JobResult> = {}): void {
-    const script = this.scripts.get(this.next);
+    // The script that started *this* job, whose lines and result belong to it.
+    const script = this.activeScript;
     const onEvent = this.subscribers.get(guid);
     if (!script || !onEvent) throw new Error('no job running');
     const event: RunnerEvent = {
@@ -311,22 +385,42 @@ async function waitForState(predicate: (state: SessionState) => boolean, what: s
     if (state && predicate(state)) return state;
     await new Promise((r) => setTimeout(r, 5));
   }
-  if (process.env.POC_DEBUG) console.log('DEBUG waiting for', what, JSON.stringify(harness.store.peek(GUID)?.job), JSON.stringify(harness.events).slice(0, 600));
+
   throw new Error(`timed out waiting for ${what}; state=${JSON.stringify(harness.store.peek(GUID), null, 2)}`);
 }
 
 /** Drives one job to completion: wait for it to start, then end it. */
 async function runJob(
-  kind: 'login' | 'list' | 'export',
+  kind: 'login' | 'check' | 'list' | 'export',
   overrides: Partial<JobResult> = {},
 ): Promise<SessionState> {
-  await waitForState((s) => s.job?.state === 'running', `${kind} to start`);
+  // The kind is matched on the way in: jobs are serialised, so waiting on
+  // `state === 'running'` alone can latch onto whichever job is in flight rather
+  // than the one this test started. `running` is safe to wait for, because only
+  // the end event clears it and this helper has not sent one yet.
+  await waitForState((s) => s.job?.state === 'running' && s.job.kind === kind, `${kind} to start`);
+  const id = harness.store.peek(GUID)!.job!.id;
   harness.runner.endJob(GUID, { kind, ...overrides });
-  return waitForState((s) => s.job?.state === 'ended', `${kind} to end`);
+
+  // Completion is read from the event log, not from `state.job`. That record is
+  // single-slot: a job queued behind this one overwrites it the instant this one
+  // ends, so a poll for `state === 'ended'` races the next job and can miss the
+  // window entirely - which is exactly what happened to the preflight tests,
+  // where a list or export follows every check. The event log is append-only, so
+  // nothing can be missed.
+  await waitFor(
+    () =>
+      harness.events.some((event) => {
+        const e = event as { type?: string; job?: { id: string; state: string } };
+        return e.type === 'job-state' && e.job?.id === id && e.job.state === 'ended';
+      }),
+    `${kind} to end`,
+  );
+  return harness.store.peek(GUID)!;
 }
 
 /** Signs a session in successfully, ready for list and export. */
-async function signedIn(options: { mfa?: boolean } = {}): Promise<void> {
+async function signedIn(options: { mfa?: boolean; skipCheck?: boolean } = {}): Promise<void> {
   harness.service.createSession(GUID);
   harness.runner.scriptLoginSuccess(options);
   void harness.service.login(GUID, '{"email":"a@b.c","password":"pw"}');
@@ -336,6 +430,48 @@ async function signedIn(options: { mfa?: boolean } = {}): Promise<void> {
   }
   await runJob('login');
   await waitForState((s) => s.auth.state === 'valid', 'login to succeed');
+
+  // A login proves we hold state, not that the session is still live, so
+  // `checkedAt` starts null and the first list/export runs the preflight. These
+  // tests are not about the preflight, so let one pass here and cache its
+  // verdict; the ones that are drive it themselves.
+  if (options.skipCheck) return;
+
+  harness.runner.scriptCheck('authenticated');
+  void harness.service.checkAuth(GUID);
+  await runJob('check');
+  await waitForState((s) => s.auth.checkedAt !== null, 'the preflight to record a verdict');
+}
+
+/**
+ * Runs an action that triggers the preflight, and drives the check job.
+ *
+ * The action cannot simply be awaited: it waits for the check, and the check
+ * waits for the test to end the job. So the action is started, the job is driven
+ * to completion, and only then is the action's promise awaited.
+ */
+async function withCheck<T>(action: () => Promise<T>): Promise<T> {
+  const pending = action();
+  // The caller asserts on the rejection. This attaches a handler as well, so a
+  // rejection that lands after the assertion has been made is not reported to
+  // vitest as an unhandled one and fails the run on its own.
+  pending.catch(() => undefined);
+  await runJob('check');
+  return pending;
+}
+
+/** Rebuilds the service with a different preflight cache TTL, on the same store. */
+function serviceWithPreflightTtl(cacheMs: number): Service {
+  return new Service({
+    store: harness.store,
+    queue: harness.queue,
+    runner: harness.runner.asClient(),
+    sse: harness.sse,
+    dataRoot: harness.dataRoot,
+    minFreeDiskMb: 0,
+    checkPreflightTtlMs: cacheMs,
+    log: () => {},
+  });
 }
 
 describe('Service', () => {
@@ -855,3 +991,240 @@ describe('RunnerError', () => {
 
 /** Keeps `mkdirSync` and the fixture helpers referenced for future cases. */
 export const _unused = { mkdirSync };
+
+describe('auth-expiry preflight', () => {
+  /**
+   * The capability PLAN-v2 §13.2 named as v1's main known limitation and
+   * PLAN-v3 deferred - both because `microsoft-webauth check` could not be
+   * trusted. It waited a fixed two seconds and asked whether the URL happened to
+   * be a login host, so an empty auth file read as signed in. 0.1.9 fixed that,
+   * which is the only reason this exists.
+   *
+   * What matters is not that it runs, but that it tells apart three outcomes that
+   * look identical from the outside.
+   */
+  it('confirms a live session and records when it was confirmed', async () => {
+    await signedIn({ skipCheck: true });
+    harness.runner.scriptCheck('authenticated');
+
+    void harness.service.checkAuth(GUID);
+    await runJob('check');
+
+    const state = harness.store.peek(GUID)!;
+    expect(state.auth.state).toBe('valid');
+    expect(state.auth.checkedAt).not.toBeNull();
+  });
+
+  it('reads a check with no verdict as unverifiable, not as a pass', async () => {
+    // Exit 0 with nothing that says "authenticated" is not a confirmation. It is
+    // also not an expiry - the app cannot tell, and must not invent either.
+    await signedIn({ skipCheck: true });
+    harness.runner.script({
+      lines: [{ stream: 'stderr', text: '[Oct 03 09:00:04] [ERROR] something unrecognised' }],
+      result: { kind: 'check', code: 0 },
+    });
+
+    await withCheck(() => harness.service.checkAuth(GUID));
+    const state = harness.store.peek(GUID)!;
+    expect(state.auth.state).toBe('valid');
+    const error = harness.events.find((e) => (e as { type?: string }).type === 'error') as {
+      code: string;
+    };
+    expect(error.code).toBe('auth_unverified');
+  });
+
+  it.each(['expired', 'stayed_unauthenticated', 'no_auth_file'] as const)(
+    'signs the session out when the check says %s',
+    async (verdict) => {
+      await signedIn({ skipCheck: true });
+      harness.runner.scriptCheck(verdict);
+
+      await expect(withCheck(() => harness.service.checkAuth(GUID))).rejects.toThrow(
+        /sign in again|auth\.json|Sign in first/i,
+      );
+      const state = harness.store.peek(GUID)!;
+      expect(state.auth.state).toBe('failed');
+      // The verdict is recorded, so the UI can explain what happened rather than
+      // silently re-enabling the sign-in form.
+      expect(state.auth.checkedAt).not.toBeNull();
+    },
+  );
+
+  it('leaves the session alone when the check could not confirm it', async () => {
+    // The distinction that makes the preflight safe rather than destructive: a
+    // network failure is not a dead session.
+    await signedIn({ skipCheck: true });
+    harness.runner.scriptCheck('unverifiable');
+
+    await expect(withCheck(() => harness.service.checkAuth(GUID))).resolves.toBeUndefined();
+    expect(harness.store.peek(GUID)!.auth.state).toBe('valid');
+  });
+
+  it('tells the user that an unverifiable check is not an expiry', async () => {
+    await signedIn({ skipCheck: true });
+    harness.runner.scriptCheck('unverifiable');
+
+    void harness.service.checkAuth(GUID);
+    await runJob('check');
+    const error = harness.events.find((e) => (e as { type?: string }).type === 'error') as {
+      code: string;
+      message: string;
+    };
+    expect(error.code).toBe('auth_unverified');
+    expect(error.message).toMatch(/network|try again/i);
+  });
+
+  describe('caching', () => {
+    it('runs once and reuses the verdict for the next operation', async () => {
+      await signedIn({ skipCheck: true });
+      harness.runner.scriptCheck('authenticated');
+      harness.runner.scriptListSuccess();
+
+      void harness.service.checkAuth(GUID);
+      await runJob('check');
+      void harness.service.listNotebooks(GUID);
+      await runJob('list');
+
+      expect(harness.runner.calls.filter((c) => c.op === 'check')).toHaveLength(1);
+      expect(harness.store.peek(GUID)!.notebooks.state).toBe('loaded');
+    });
+
+    it('checks again once the verdict has aged out', async () => {
+      // A zero TTL makes every operation pay for the check, which is the honest
+      // behaviour when the cost of a stale verdict is an unexplained failure.
+      const service = serviceWithPreflightTtl(0);
+      await signedIn({ skipCheck: true });
+      harness.runner.scriptCheck('authenticated');
+      harness.runner.scriptListSuccess();
+      harness.runner.scriptCheck('authenticated');
+
+      await withCheck(() => service.checkAuth(GUID));
+      // The list triggers its own preflight, because the verdict is already stale.
+      void service.listNotebooks(GUID);
+      await runJob('check');
+      await runJob('list');
+
+      expect(harness.runner.calls.filter((c) => c.op === 'check')).toHaveLength(2);
+    });
+
+    it('records an unverifiable verdict, so the automatic preflight stops re-checking', async () => {
+      // Cached like any other verdict. If it were not, a broken network would
+      // make every list and export launch another browser.
+      await signedIn({ skipCheck: true });
+      harness.runner.scriptCheck('unverifiable');
+      harness.runner.scriptListSuccess();
+
+      void harness.service.checkAuth(GUID);
+      await runJob('check');
+      void harness.service.listNotebooks(GUID);
+      await runJob('list');
+
+      expect(harness.runner.calls.filter((c) => c.op === 'check')).toHaveLength(1);
+      expect(harness.store.peek(GUID)!.notebooks.state).toBe('loaded');
+    });
+
+    it('re-checks on an explicit request, because that is what was asked for', async () => {
+      // checkAuth is the "check my session" button. Answering it from cache
+      // would make the button lie after the TTL expired.
+      await signedIn({ skipCheck: true });
+      harness.runner.scriptCheck('authenticated');
+      harness.runner.scriptCheck('authenticated');
+
+      await withCheck(() => harness.service.checkAuth(GUID));
+      await withCheck(() => harness.service.checkAuth(GUID));
+
+      expect(harness.runner.calls.filter((c) => c.op === 'check')).toHaveLength(2);
+    });
+  });
+
+  describe('before an operation', () => {
+    it('refuses to list with an expired session, and says why', async () => {
+      await signedIn({ skipCheck: true });
+      harness.runner.scriptCheck('expired');
+
+      await expect(withCheck(() => harness.service.listNotebooks(GUID))).rejects.toThrow(
+        /expired|sign in again/i,
+      );
+      expect(harness.runner.calls.some((c) => c.op === 'list')).toBe(false);
+    });
+
+    it('refuses to export with an expired session, before writing anything', async () => {
+      await signedIn({ skipCheck: true });
+      harness.runner.scriptCheck('expired');
+
+      await expect(
+        withCheck(() => harness.service.exportNotebook(GUID, { notebook: 'Personal' })),
+      ).rejects.toThrow(/expired|sign in again/i);
+      expect(harness.runner.calls.some((c) => c.op === 'export')).toBe(false);
+      expect(harness.store.peek(GUID)!.export.state).toBe('idle');
+    });
+
+    it('proceeds with the export when the check simply could not tell', async () => {
+      await signedIn({ skipCheck: true });
+      harness.runner.scriptCheck('unverifiable');
+      harness.runner.scriptExportSuccess(2);
+
+      // The preflight runs first and does not block, so the export follows it.
+      void harness.service.exportNotebook(GUID, { notebook: 'Personal' });
+      await runJob('check');
+      await runJob('export');
+      expect(harness.store.peek(GUID)!.export.state).toBe('done');
+    });
+
+    it('leaves an existing artefact downloadable after an expiry', async () => {
+      // Nobody should lose an export because their Microsoft session aged out.
+      await signedIn({ skipCheck: true });
+      mkdirSync(join(harness.dataRoot, GUID, 'out', 'Personal'), { recursive: true });
+      writeFileSync(join(harness.dataRoot, GUID, 'out', 'Personal', 'note.md'), '# note');
+      harness.store.update(GUID, (st) => {
+        st.export = {
+          ...st.export,
+          state: 'done',
+          notebook: 'Personal',
+          artifact: { name: 'Personal', bytes: 6, partial: false },
+        };
+      });
+      harness.runner.scriptCheck('expired');
+
+      await expect(withCheck(() => harness.service.listNotebooks(GUID))).rejects.toThrow(
+        /expired|sign in again/i,
+      );
+      expect(harness.store.peek(GUID)!.export.artifact).not.toBeNull();
+    });
+  });
+
+  describe('the job', () => {
+    it('is announced as a job, because it takes tens of seconds', async () => {
+      await signedIn({ skipCheck: true });
+      harness.runner.scriptCheck('authenticated');
+
+      void harness.service.checkAuth(GUID);
+      await runJob('check');
+      const jobEvents = harness.events.filter((e) => (e as { type?: string }).type === 'job-state');
+      expect(jobEvents.some((e) => (e as { job: { kind: string } }).job.kind === 'check')).toBe(true);
+    });
+
+    it('goes through the queue, so two sessions cannot both claim the runner', async () => {
+      // The preflight launches a browser. Two sessions preflighting at once would
+      // race for the runner's single slot and one would get a 409 it cannot act
+      // on, so it is a queued job like every other.
+      await signedIn({ skipCheck: true });
+      const other = '9a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d';
+      harness.service.createSession(other);
+      harness.store.update(other, (st) => {
+        st.auth = { state: 'valid', email: null, at: 'now', checkedAt: null };
+      });
+      harness.runner.scriptCheck('authenticated');
+
+      void harness.service.checkAuth(GUID);
+      void harness.service.checkAuth(other);
+
+      await waitFor(
+        () => harness.runner.calls.filter((c) => c.op === 'check').length >= 1,
+        'the first check to start',
+      );
+      // The second is queued behind it rather than racing it.
+      expect(harness.runner.calls.filter((c) => c.op === 'check')).toHaveLength(1);
+    });
+  });
+});

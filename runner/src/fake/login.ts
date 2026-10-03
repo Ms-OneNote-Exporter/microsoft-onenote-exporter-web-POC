@@ -1,21 +1,22 @@
 /**
- * Fake `microsoft-webauth login`.
+ * Fake `microsoft-webauth login`, at 0.1.9.
  *
  * Emits the real package's log lines, in its real order, in its real timestamp
- * format - and, critically, reproduces its worst behaviour: **a failed login
- * exits 0**. That is not a quirk invented for testing, it is what
- * `microsoft-webauth@0.1.8` does: `login()` catches everything, logs
- * `Authentication failed or cancelled`, and never sets an exit code. A capture of
- * a real failed login against a non-existent account exited 0.
+ * format, and reproduces 0.1.9's exit codes - which is what changed in 0.1.9:
+ * a failed login now exits 1 and adds a closing line saying so. Both were
+ * captured from the published package, not assumed.
  *
- * Which path is taken is chosen by the password, so a tester can drive all four
- * without a Microsoft account:
+ * Which path is taken is chosen by the password, so a tester can drive every
+ * outcome without a Microsoft account:
  *
  *   anything else   success
  *   mfa             code challenge, read from stdin, 6 digits required
  *   number          number-match challenge, passively waited out
- *   fail            bad credentials, exit 0
- *   mfail           MFA code rejected, exit 0
+ *   fail            bad credentials, exit 1
+ *   mfail           MFA code rejected, exit 1
+ *   nolog           reaches the app but leaves no usable auth file, exit 1
+ *                   (0.1.9's new failure mode, and the one a login that
+ *                   "succeeded" used to produce)
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -41,7 +42,7 @@ async function main() {
   const password = args.password ?? '';
   const authFile = args['auth-file'];
 
-  log('DEBUG', 'Authentication Module: v0.1.8 starting...');
+  log('DEBUG', 'Authentication Module: v0.1.9 starting...');
   log('DEBUG', `Using auth file path: ${authFile}`);
   log('DEBUG', `Using meta file path: ${authFile?.replace(/\.json$/, '-meta.json')}`);
   log('INFO', `Attempting automated login for ${email}...`);
@@ -87,12 +88,29 @@ async function main() {
         new LoginError('Login Error (Verification): That code is incorrect.'),
       );
       log('DEBUG', 'Possible cause: incorrect credentials, MFA requirement, or selector change.');
-      return; // exit 0 - the real package's behaviour on failure
+      return reportFailure();
     }
   } else if (scenario === 'fail') {
-    log('ERROR', 'Authentication failed or cancelled:', new LoginError('Login Error (Password): Your account or password is incorrect.'));
+    log(
+      'ERROR',
+      'Authentication failed or cancelled:',
+      new LoginError('Login Error (Password): Your account or password is incorrect.'),
+    );
     log('DEBUG', 'Possible cause: incorrect credentials, MFA requirement, or selector change.');
-    return; // exit 0, as above
+    return reportFailure();
+  }
+
+  if (scenario === 'nolog') {
+    // The 0.1.9 failure mode: the app was reached, so the old code would have
+    // logged a cheerful success with nothing usable behind it. The package now
+    // reads the file back, finds it missing, and treats the login as failed.
+    log('INFO', 'Saving authentication state...');
+    log(
+      'ERROR',
+      `Login reached the authenticated interface but the auth file is not usable (missing): ${authFile} does not exist`,
+    );
+    log('ERROR', 'Treating this as a failed login: there is no usable state to save.');
+    return reportFailure();
   }
 
   log('INFO', 'Saving authentication state...');
@@ -112,6 +130,19 @@ async function main() {
     );
   }
   log('SUCCESS', `Authentication successful! State saved to ${authFile}`);
+}
+
+/**
+ * 0.1.9's closing line, and its exit code.
+ *
+ * Before 0.1.9 this package exited 0 here, which is what the POC's whole
+ * "never trust the exit code" rule was built around. The line and the code are
+ * both reproduced so the fake stays a faithful stand-in - the app still does not
+ * *rely* on the code, and that is now belt and braces rather than a workaround.
+ */
+function reportFailure(): void {
+  log('ERROR', 'login failed (exit 1). No usable auth state was saved. See the errors above.');
+  process.exitCode = 1;
 }
 
 void main();

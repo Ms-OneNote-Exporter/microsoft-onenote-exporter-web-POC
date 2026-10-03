@@ -110,6 +110,9 @@ export function AuthBlock({
         <p className="lead">
           Your Microsoft session is loaded in this session's container. Notebook list is unlocked.
         </p>
+        {state.auth.checkedAt && (
+          <p className="muted small">Confirmed with Microsoft recently.</p>
+        )}
         {state.auth.email && <p className="muted">Signed in as {state.auth.email}</p>}
       </section>
     );
@@ -173,7 +176,9 @@ export function AuthBlock({
 
       {state.auth.state === 'failed' && (
         <p className="alert" role="alert">
-          Sign-in failed. The log below has the details.
+          {state.auth.checkedAt
+            ? 'Your Microsoft session is no longer valid. Sign in again — anything you already exported is still downloadable below.'
+            : 'Sign-in failed. The log below has the details.'}
         </p>
       )}
       {guid === '' && <p className="warn">No session GUID.</p>}

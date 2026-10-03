@@ -50,7 +50,15 @@ export type AuthState = 'none' | 'logging-in' | 'valid' | 'failed';
 export type ListState = 'idle' | 'queued' | 'listing' | 'loaded' | 'failed';
 export type ExportState = 'idle' | 'queued' | 'running' | 'done' | 'partial' | 'failed' | 'aborted';
 export type JobState = 'queued' | 'running' | 'ended';
-export type JobKind = 'login' | 'list' | 'export';
+/**
+ * `check` is `microsoft-webauth check`: it asks Microsoft whether the saved
+ * session is still live. It exists because 0.1.9 made it trustworthy - it waits
+ * for either the signed-in app or a login redirect, exits 1 when it cannot
+ * confirm, and only deletes the auth file when Microsoft says expired. Before
+ * that, a check could report success for a dead session, which is why the POC
+ * deferred it entirely.
+ */
+export type JobKind = 'login' | 'check' | 'list' | 'export';
 export type MfaKind = null | 'code' | 'number';
 /** The MFA code/number the user is being asked for, if any. */
 export interface MfaState {
@@ -87,7 +95,17 @@ export interface SessionState {
     auth: {
         state: AuthState;
         email: string | null;
+        /** When the session last proved itself. */
         at: string | null;
+        /**
+         * When `microsoft-webauth check` last confirmed the session with Microsoft.
+         *
+         * The preflight costs a browser launch and a page load, so it is not run
+         * before every operation: a verdict younger than the preflight TTL is
+         * treated as still current. Null means "never confirmed", which is the state
+         * a login leaves behind.
+         */
+        checkedAt: string | null;
     };
     mfa: MfaState;
     notebooks: {
@@ -120,7 +138,7 @@ export declare function newSessionState(guid: string, now: Date, ttlHours: numbe
  * `unknown` is the honest default and the raw line is always kept alongside it
  * rather than being discarded.
  */
-export type AppErrorCode = 'bad_credentials' | 'mfa_timeout' | 'captcha_required' | 'microsoft_blocked' | 'notebook_not_found' | 'no_target' | 'export_failed' | 'export_partial' | 'aborted' | 'no_auth' | 'busy' | 'low_disk' | 'no_notebooks' | 'timeout' | 'crashed' | 'unknown';
+export type AppErrorCode = 'bad_credentials' | 'mfa_timeout' | 'captcha_required' | 'microsoft_blocked' | 'notebook_not_found' | 'auth_expired' | 'auth_unverified' | 'no_target' | 'export_failed' | 'export_partial' | 'aborted' | 'no_auth' | 'busy' | 'low_disk' | 'no_notebooks' | 'timeout' | 'crashed' | 'unknown';
 export declare const ERROR_TEXT: Record<AppErrorCode, string>;
 /**
  * The POC's event set, deliberately a subset of PLAN-v2 §7.1.

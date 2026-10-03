@@ -13,6 +13,7 @@ import {
   type JobTrace,
   artifactExists,
   absorbLine,
+  judgeCheck,
   judgeExport,
   judgeList,
   judgeLogin,
@@ -38,6 +39,16 @@ export interface ServiceDeps {
   sse: SseHub;
   dataRoot: string;
   minFreeDiskMb: number;
+  /**
+   * How long a `microsoft-webauth check` verdict is treated as current.
+   *
+   * The preflight launches a browser and loads OneNote, which takes long enough
+   * that doing it before every action would double the cost of a small one. A
+   * few minutes is short enough that a session Microsoft has just invalidated is
+   * caught quickly, and long enough that one check serves a list-then-export
+   * sequence. Zero disables caching and checks every time.
+   */
+  checkPreflightTtlMs?: number;
   log?: (message: string) => void;
   now?: () => Date;
 }
@@ -71,6 +82,7 @@ export class Service {
   private readonly sse: SseHub;
   private readonly dataRoot: string;
   private readonly minFreeDiskMb: number;
+  private readonly checkPreflightTtlMs: number;
   private readonly log: (message: string) => void;
   private readonly now: () => Date;
 
@@ -84,6 +96,7 @@ export class Service {
     this.sse = deps.sse;
     this.dataRoot = deps.dataRoot;
     this.minFreeDiskMb = deps.minFreeDiskMb;
+    this.checkPreflightTtlMs = deps.checkPreflightTtlMs ?? 5 * 60_000;
     this.log = deps.log ?? (() => {});
     this.now = deps.now ?? (() => new Date());
   }
@@ -119,15 +132,18 @@ export class Service {
    * state belongs to a previous job and must not be revived, or a late update
    * would overwrite the outcome the user is already looking at.
    */
-  private markRunning(guid: string, id: string, kind: 'login' | 'list' | 'export'): void {
+  private markRunning(guid: string, id: string, kind: 'login' | 'check' | 'list' | 'export'): void {
     const now = this.now().toISOString();
     this.patch(guid, (s) => {
-      // Only the *same* job may move out of `queued`. A record with a different
-      // id is a previous job that has already ended, and reviving it would
-      // overwrite the outcome the user is looking at; the guard has to compare
-      // ids, not merely look for `ended`, or the first job after any finished
-      // one would never appear to start.
-      if (s.job && s.job.state === 'ended' && s.job.id !== id) return;
+      // A late update for a job that has already recorded its outcome is dropped:
+      // overwriting it would replace a result the user is looking at with a
+      // "running" that is already over.
+      //
+      // A *different* id is a new job and must be written. An earlier version of
+      // this guard rejected any `ended` record, which meant the first job after
+      // any finished one could never appear to start - and the preflight check,
+      // which always follows a login, never did.
+      if (s.job && s.job.id === id && s.job.state === 'ended') return;
       s.job = {
         id,
         kind,
@@ -163,12 +179,7 @@ export class Service {
     judge: (trace: JobTrace, result: JobResult) => JobOutcome,
   ): Promise<void> {
     const trace = newTrace();
-    const context = {
-      guid,
-      dataRoot: this.dataRoot,
-      patch: (mutate: (state: SessionState) => void) => this.patch(guid, mutate),
-      emit: (event: AppEvent) => this.emit(guid, event),
-    };
+    const context = this.flowContext(guid);
 
     const finish = (result: JobResult) => {
       const outcome = judge(trace, result);
@@ -210,23 +221,39 @@ export class Service {
       return;
     }
 
-    // Subscribe after the 202 so the first lines are not missed, then wait for
-    // the end event. The runner's ring buffer means a line emitted between the
-    // 202 and here is still replayed.
-    const ended = new Promise<JobResult>((resolve) => {
-      // Resume from this job's own first sequence, not from 0: the runner's
-      // stream is per session and its ring still holds the previous job's lines,
-      // including that job's `end` event.
+    const result = await this.collect(guid, fromSeq, trace, context);
+    finish(result);
+  }
+
+  private flowContext(guid: string): FlowContext {
+    return {
+      guid,
+      dataRoot: this.dataRoot,
+      patch: (mutate: (state: SessionState) => void) => this.patch(guid, mutate),
+      emit: (event: AppEvent) => this.emit(guid, event),
+    };
+  }
+
+  /**
+   * Subscribes to a running job and resolves when it ends.
+   *
+   * Starts from the sequence the runner reported, not from 0: the stream is per
+   * session and its ring still holds the previous job's lines, including that
+   * job's `end` event - so a subscription from the beginning would judge the new
+   * job finished before it started.
+   */
+  private collect(
+    guid: string,
+    fromSeq: number,
+    trace: JobTrace,
+    context: FlowContext,
+  ): Promise<JobResult> {
+    return new Promise<JobResult>((resolve) => {
       const unsubscribe = this.runner.subscribe(guid, fromSeq, (event) => {
         if ('kind' in event && event.kind === 'gap') return;
         if (isLineEvent(event)) {
           const line = event as LineEvent;
-          this.emit(guid, {
-            type: 'log',
-            seq: line.seq,
-            level: 'info',
-            text: line.text,
-          });
+          this.emit(guid, { type: 'log', seq: line.seq, level: 'info', text: line.text });
           absorbLine(trace, line.text, context);
           this.store.update(guid, (state) => {
             if (line.seq > state.logSeq) state.logSeq = line.seq;
@@ -240,10 +267,6 @@ export class Service {
       });
       this.subscriptions.set(guid, unsubscribe);
     });
-
-    const result = await ended;
-    this.subscriptions.delete(guid);
-    finish(result);
   }
 
   // Note on abort: the subscription is deliberately *not* torn down here.
@@ -269,9 +292,12 @@ export class Service {
       const state = this.patch(guid, (s) => {
         s.job = finishJob(s.job, 'login', now, outcome.error);
         s.mfa = { kind: null, number: null, askedAt: null };
+        // `checkedAt` is deliberately left alone: a login does not prove the
+        // session live with Microsoft, only that we hold state for it. Only
+        // `check` sets that.
         s.auth = outcome.ok
-          ? { state: 'valid', email: s.auth.email, at: now }
-          : { state: 'failed', email: s.auth.email, at: now };
+          ? { state: 'valid', email: s.auth.email, at: now, checkedAt: s.auth.checkedAt }
+          : { state: 'failed', email: s.auth.email, at: now, checkedAt: s.auth.checkedAt };
         if (outcome.ok) s.export.error = null;
       });
       context.emit({ type: 'auth-state', auth: state.auth, mfa: state.mfa });
@@ -303,6 +329,12 @@ export class Service {
       });
       context.emit({ type: 'export-state', export: state.export });
     }
+
+    // The job ending is announced in its own right, after the record is written.
+    // Every other transition is published, and without this a browser learns a
+    // job finished only through a side-channel event - and a job with no feature
+    // of its own, like the preflight check, would finish silently.
+    this.emit(guid, { type: 'job-state', job: this.readSession(guid).job });
 
     if (!outcome.ok && outcome.error) {
       context.emit({
@@ -380,6 +412,7 @@ export class Service {
   async listNotebooks(guid: string): Promise<{ jobId: string; position: number }> {
     const state = this.readSession(guid);
     this.assertSlot(guid, state);
+    await this.ensureAuthLive(guid);
 
     const { id, done } = this.queue.submit(
       {
@@ -419,6 +452,7 @@ export class Service {
     }
     this.assertSlot(guid, state);
     this.assertDisk();
+    await this.ensureAuthLive(guid);
 
     const { id, done } = this.queue.submit(
       {
@@ -460,6 +494,131 @@ export class Service {
     this.emit(guid, { type: 'export-state', export: this.readSession(guid).export });
     void done.catch(() => {});
     return { jobId: id, position: this.queue.positionOf(id) ?? 1 };
+  }
+
+  /**
+   * Confirms with Microsoft that this session is still live, on demand.
+   *
+   * The same work list and export do automatically before they run. Exposed
+   * because a user whose export just failed has no way to tell an expired
+   * session from a transient error, and "check now" is the honest answer.
+   *
+   * @throws ServiceError 409 when the session is no longer authenticated.
+   */
+  async checkAuth(guid: string): Promise<void> {
+    this.readSession(guid);
+    await this.runPreflightCheck(guid);
+  }
+
+  /**
+   * Confirms with Microsoft that the session is still live, before an operation
+   * that would otherwise fail obscurely.
+   *
+   * This closes the limitation PLAN-v2 §13.2 named as v1's main known problem: a
+   * session that signed in at 10:00 and exported at 12:30 used to present an
+   * export error indistinguishable from the crashed-OneNote-tab error the
+   * packages document. It became possible only at 0.1.9, when `check` stopped
+   * reporting success for a dead session.
+   *
+   * The verdict is cached briefly, because the check is not free: it launches a
+   * browser and loads OneNote.
+   *
+   * `unverifiable` deliberately does not block the operation. The check failing
+   * is not evidence the session is bad, and refusing to export on a DNS blip
+   * would be worse than the error it prevents.
+   */
+  private async ensureAuthLive(guid: string): Promise<void> {
+    const state = this.readSession(guid);
+    if (state.auth.checkedAt && this.checkPreflightTtlMs > 0) {
+      const age = this.now().getTime() - Date.parse(state.auth.checkedAt);
+      if (Number.isFinite(age) && age < this.checkPreflightTtlMs) return;
+    }
+    // A check needs an auth file to check; without one the session is not signed
+    // in, which assertSlot has already established cannot be the case.
+    await this.runPreflightCheck(guid);
+  }
+
+  /** Runs the check and records the verdict. Throws when the session is gone. */
+  private async runPreflightCheck(guid: string): Promise<void> {
+    const trace = newTrace();
+    const context = this.flowContext(guid);
+    const state = this.readSession(guid);
+
+    let outcome: JobOutcome;
+    try {
+      // Through the queue, like every other job. Calling the runner directly
+      // would be a bug: two sessions both preflighting at once would both try to
+      // claim the runner's single slot, and one would get a 409 it cannot act on.
+      const { done } = this.queue.submit(
+        {
+          kind: 'check',
+          run: async () => {
+            // The check is a real job and is shown as one: it launches a browser
+            // and takes tens of seconds, and a UI that showed nothing would look
+            // hung. Marked here rather than at submit time, because this is
+            // where the job actually claims the runner's slot.
+            this.markRunning(guid, this.pendingJobId(guid) ?? 'job-check', 'check');
+            this.emit(guid, { type: 'job-state', job: this.readSession(guid).job });
+            const { fromSeq } = await this.runner.check(guid);
+            return this.collect(guid, fromSeq, trace, context);
+          },
+        },
+        guid,
+      );
+      outcome = judgeCheck(trace, await done);
+    } catch (error) {
+      // The runner would not start the check. Not knowing is not the same as
+      // knowing the session is dead, so this is recorded and the operation
+      // continues - refusing to export because a check could not run would be a
+      // worse failure than the one the preflight exists to prevent.
+      this.log(`preflight check could not run for ${guid.slice(0, 8)}…: ${(error as Error).message}`);
+      return;
+    }
+    const now = this.now().toISOString();
+
+    // The check is a real job and says so: it takes a browser launch and tens of
+    // seconds, and a UI that showed nothing would look hung.
+    this.patch(guid, (st) => {
+      st.job = finishJob(st.job, 'check', now, outcome.ok ? null : outcome.error);
+    });
+    this.emit(guid, { type: 'job-state', job: this.readSession(guid).job });
+
+    if (outcome.ok) {
+      this.patch(guid, (st) => {
+        st.auth = { ...st.auth, state: 'valid', checkedAt: now };
+      });
+      this.emit(guid, { type: 'auth-state', auth: this.readSession(guid).auth, mfa: state.mfa });
+      return;
+    }
+
+    if (outcome.error === 'auth_unverified') {
+      // The check itself failed. Recorded so the UI can say so, but it does not
+      // sign the user out.
+      this.patch(guid, (st) => {
+        st.auth = { ...st.auth, checkedAt: now };
+      });
+      this.emit(guid, { type: 'error', code: 'auth_unverified', message: outcome.message! });
+      return;
+    }
+
+    // Expired, or there is nothing to log in with: the session is gone. The auth
+    // block comes back, and any export already on disk stays downloadable.
+    this.patch(guid, (st) => {
+      st.auth = { state: 'failed', email: st.auth.email, at: st.auth.checkedAt, checkedAt: now };
+      st.notebooks = { state: 'idle', items: st.notebooks.items, error: 'no_auth' };
+    });
+    const current = this.readSession(guid);
+    this.emit(guid, { type: 'auth-state', auth: current.auth, mfa: current.mfa });
+    this.emit(guid, {
+      type: 'error',
+      code: outcome.error ?? 'auth_expired',
+      message: outcome.message ?? ERROR_TEXT.auth_expired,
+    });
+    throw new ServiceError(
+      (outcome.error ?? 'auth_expired') as AppErrorCode,
+      outcome.message ?? ERROR_TEXT.auth_expired,
+      409,
+    );
   }
 
   /** Interrupts the running export. Signals the child; no cooperative cancel exists. */
@@ -616,7 +775,7 @@ export class Service {
  */
 function finishJob(
   current: SessionState['job'],
-  kind: 'login' | 'list' | 'export',
+  kind: 'login' | 'check' | 'list' | 'export',
   endedAt: string,
   error: AppErrorCode | null,
 ): NonNullable<SessionState['job']> {
