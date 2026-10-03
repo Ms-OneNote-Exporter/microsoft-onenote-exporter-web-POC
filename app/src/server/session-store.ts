@@ -3,6 +3,7 @@ import {
   type SessionState,
   isValidGuid,
   newSessionState,
+  normaliseSessionState,
   sessionPaths,
 } from '@msout-poc/shared';
 
@@ -78,7 +79,10 @@ export class SessionStore {
       // A file from an older shape, or a hand-edited one, is not trusted: the
       // session is rebuilt rather than crashing the request that found it.
       if (parsed.guid !== guid) throw new Error('guid mismatch');
-      return parsed;
+      // Not every field has always existed. Session files outlive the build that
+      // wrote them, so missing nested fields are filled in rather than left
+      // `undefined` for the renderer to trip over.
+      return normaliseSessionState(parsed, guid, this.now(), this.ttlHours);
     } catch {
       const state = newSessionState(guid, this.now(), this.ttlHours);
       this.write(state);
@@ -92,7 +96,7 @@ export class SessionStore {
     try {
       const paths = sessionPaths(this.dataRoot, guid);
       const parsed = JSON.parse(readFileSync(`${paths.dir}/state.json`, 'utf8')) as SessionState;
-      return parsed.guid === guid ? parsed : null;
+      return parsed.guid === guid ? normaliseSessionState(parsed, guid, this.now(), this.ttlHours) : null;
     } catch {
       return null;
     }

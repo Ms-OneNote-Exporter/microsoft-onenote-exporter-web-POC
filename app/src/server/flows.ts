@@ -45,7 +45,10 @@ export interface JobTrace {
   mfaNumber: string | null;
   notebooks: NotebookCollector;
   pagesExported: number;
+  pagesFailed: number | null;
   totalPages: number | null;
+  /** Absolute path the exporter reported, before it is checked against the session. */
+  reportedOutDir: string | null;
   notebookResolved: string | null;
   availableNotebooks: string[];
 }
@@ -65,7 +68,9 @@ export function newTrace(): JobTrace {
     mfaNumber: null,
     notebooks: new NotebookCollector(),
     pagesExported: 0,
+    pagesFailed: null,
     totalPages: null,
+    reportedOutDir: null,
     notebookResolved: null,
     availableNotebooks: [],
     sawExportComplete: false,
@@ -141,6 +146,19 @@ export function absorbLine(
 
     case 'notebooks':
       trace.notebooks.push(parsed.text);
+      return;
+
+    case 'files-saved-in':
+      // Kept raw here and validated by the caller: this string came out of a
+      // log, and the log is not trusted to name a directory.
+      trace.reportedOutDir = signal.dir;
+      return;
+
+    case 'pages-failed':
+      trace.pagesFailed = signal.pages;
+      context.patch((state) => {
+        state.export.pagesFailed = signal.pages;
+      });
       return;
 
     case 'page-exported':

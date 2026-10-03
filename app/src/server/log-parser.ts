@@ -35,8 +35,19 @@ export type Signal =
   | { kind: 'check-authenticated' }
   /** `check` did not confirm it, with the reason it gives. */
   | { kind: 'check-not-authenticated'; reason: string }
-  /** One page finished exporting. */
-  | { kind: 'page-exported' }
+  /** One page was written to disk. Carries the asset count it saved with. */
+  | { kind: 'page-exported'; assets: number }
+  /** `Pages    failed: 2` - the exporter's own tally of pages it could not write. */
+  | { kind: 'pages-failed'; pages: number }
+  /**
+   * `Files saved in: <absolute path>` - where the exporter actually wrote.
+   *
+   * Preferred over deriving the directory from the notebook name, because the
+   * name is user text and gets sanitised on the way to a filename. Callers must
+   * resolve this against the session's own output directory and discard it if it
+   * lands anywhere else; see `relativeInside`.
+   */
+  | { kind: 'files-saved-in'; dir: string }
   /** Final page count. */
   | { kind: 'total-pages'; pages: number }
   /** Final asset count. */
@@ -109,11 +120,26 @@ export function parseLine(raw: string): ParsedLine {
   return { level, text: match[2]!, raw, prefixed: true };
 }
 
+/** `Files saved in: /data/<guid>/out/The Complete Notebook` */
+const FILES_SAVED_RE = /^Files saved in:\s*(.+?)\s*$/;
+/** `  Pages    failed: 2` - the per-category failure tally. */
+const PAGES_FAILED_RE = /^Pages\s+failed:\s*(\d+)\s*$/;
 /** `1. Personal (https://…)` - the only machine-ish output the lister has. */
 const NOTEBOOK_RE = /^\s*(\d+)\.\s+(.+?)\s+\((https?:\/\/[^)]+)\)\s*$/;
 
-/** `Exporting: Meeting notes ...` */
-const EXPORTING_RE = /^Exporting:\s+(.+?)\s*\.\.\.$/;
+/**
+ * `Saved (2 assets)` - the line that means a page reached disk.
+ *
+ * This is deliberately NOT `Exporting: <page> ...`, which is what this parser
+ * used to count. `Exporting:` is printed when a page export *starts*, so a page
+ * that fails and is retried is counted twice, and a page that fails outright is
+ * counted once despite writing nothing.
+ *
+ * Measured on a real 24-page export: 26 `Exporting:` lines, 24 `Saved` lines,
+ * 2 `Failed to export`, and 24 `.md` files on disk. Only `Saved` agrees with
+ * the filesystem.
+ */
+const SAVED_RE = /^Saved \((\d+) assets?\)$/;
 const TOTAL_PAGES_RE = /^Total Pages:\s*(\d+)\s*$/;
 const TOTAL_ASSETS_RE = /^Total Assets:\s*(\d+)/;
 const MFA_NUMBER_RE = /^\s*Enter the number:\s*(\d+)\s*$/;
@@ -198,10 +224,22 @@ export function classify(text: string): Signal {
   const totalAssets = TOTAL_ASSETS_RE.exec(line);
   if (totalAssets) return { kind: 'total-assets', assets: Number.parseInt(totalAssets[1]!, 10) };
 
+  // --- where the output landed -----------------------------------------
+  // Checked before `Saved`, which is a substring-free match, and reported as a
+  // path for the caller to validate rather than trusted: it is text this
+  // service did not write, so it is data, not an instruction.
+  const filesSaved = FILES_SAVED_RE.exec(line);
+  if (filesSaved) return { kind: 'files-saved-in', dir: filesSaved[1]! };
+
+  // --- counts ----------------------------------------------------------
+  const pagesFailed = PAGES_FAILED_RE.exec(line);
+  if (pagesFailed) return { kind: 'pages-failed', pages: Number.parseInt(pagesFailed[1]!, 10) };
+
   // --- progress --------------------------------------------------------
-  // Checked after the counts so `Exporting notebook: X` (no trailing dots) and
-  // `Exporting: <page> ...` do not collide.
-  if (EXPORTING_RE.test(line)) return { kind: 'page-exported' };
+  // After the counts, so `Exporting notebook: X` and `Exporting: <page> ...`
+  // cannot be mistaken for either.
+  const saved = SAVED_RE.exec(line);
+  if (saved) return { kind: 'page-exported', assets: Number.parseInt(saved[1]!, 10) };
 
   // --- notebook list ---------------------------------------------------
   const nb = NOTEBOOK_RE.exec(line);

@@ -102,12 +102,18 @@ async function main() {
       join(nbDir, `${page}.md`),
       `# ${page}\n\nExported by the fake exporter.\n\n- item one\n- item two\n`,
     );
-    if (i % 2 === 0) {
+    const savedAssets = i % 2 === 0 ? 1 : 0;
+    if (savedAssets === 1) {
       assets += 1;
       const assetDir = join(nbDir, 'assets');
       mkdirSync(assetDir, { recursive: true });
       writeFileSync(join(assetDir, `image-${assets}.txt`), `fake asset ${assets}\n`);
     }
+    // The line that means the file exists. The real package prints this after
+    // writing the page, and `Exporting:` before starting it; a fake that emits
+    // only the latter cannot express a page that failed, which is the case the
+    // page counter exists to get right.
+    log('SUCCESS', `Saved (${savedAssets} asset${savedAssets === 1 ? '' : 's'})`);
 
     // A page can fail to export and the run continues, which is exactly why the
     // real package prints a summary of failures rather than a bare "complete".
@@ -123,7 +129,7 @@ async function main() {
 
   if (mode === 'partial') {
     log('WARN', 'Export finished with errors - 1 item(s) could not be exported.');
-    log('WARN', '  Sections failed: 1');
+    log('WARN', '  Pages    failed: 1');
     log('WARN', '  See the errors above and logs/app.log for details.');
   } else if (mode !== 'stopped') {
     log('SUCCESS', 'Export complete!');

@@ -148,8 +148,39 @@ describe('classify', () => {
     });
   });
 
-  it('counts a finished page', () => {
-    expect(classify('Exporting: Meeting notes ...')).toEqual({ kind: 'page-exported' });
+  it('counts a page that reached disk', () => {
+    // `Saved` is the line that means a file exists. Verified against a real
+    // 24-page export: 24 of these lines, 24 `.md` files, `Total Pages: 24`.
+    expect(classify('Saved (2 assets)')).toEqual({ kind: 'page-exported', assets: 2 });
+    expect(classify('Saved (0 assets)')).toEqual({ kind: 'page-exported', assets: 0 });
+    // The package really does print the singular for one.
+    expect(classify('Saved (1 asset)')).toEqual({ kind: 'page-exported', assets: 1 });
+  });
+
+  /**
+   * Regression, from a real export.
+   *
+   * `Exporting: <page> ...` is printed when a page export *starts*. Counting it
+   * reported 26 pages for an export that wrote 24 files, because a page that
+   * failed and was retried was counted twice and a page that failed outright was
+   * counted once having written nothing - so the number could exceed the total
+   * the same run reported.
+   */
+  it('does not count a page that only started', () => {
+    expect(classify('Exporting: Meeting notes ...').kind).toBe('none');
+    expect(classify('Exporting: Untitled Page ...').kind).toBe('none');
+  });
+
+  it('reads the directory the exporter says it wrote to', () => {
+    expect(classify('Files saved in: /data/abc/out/The Complete Notebook')).toEqual({
+      kind: 'files-saved-in',
+      dir: '/data/abc/out/The Complete Notebook',
+    });
+  });
+
+  it('reads the exporter\'s own page failure tally', () => {
+    // Emitted indented under a [WARN] block, hence the leading whitespace.
+    expect(classify('  Pages    failed: 2')).toEqual({ kind: 'pages-failed', pages: 2 });
   });
 
   it('does not mistake the notebook banner for a finished page', () => {
@@ -233,7 +264,7 @@ describe('classify', () => {
   it('is not fooled by an ordinary sentence', () => {
     expect(classify('Fetching notebooks...').kind).toBe('none');
     expect(classify('Connecting to OneNote...').kind).toBe('none');
-    expect(classify('Files saved in: /data/x/out/Personal').kind).toBe('none');
+    // `Files saved in:` is a real signal, so it is not in this list.
   });
 
   it('returns none rather than guessing', () => {
@@ -441,6 +472,43 @@ describe('captured output', () => {
     const stderr = fixture('export-missing-auth.stderr.txt');
     const joined = stderr.map((l) => parseLine(l).text).join('\n');
     expect(errorFromLines([joined], 1)).toBe('no_auth');
+  });
+
+  /**
+   * The one fixture captured from a real account rather than written by hand.
+   *
+   * It exists because it is the only capture that shows a complete export with
+   * the package's own failure tally, which is what proves the page counter counts
+   * the right lines: the numbers below are the numbers on disk.
+   */
+  it('reads a real 24-page export, and agrees with the filesystem', () => {
+    const lines = fixture('export-real-24-pages.sanitised.txt').map(parseLine);
+    const signals = lines.map((p) => classify(p.text));
+
+    // 24 `Saved` lines. The same export wrote 24 `.md` files and reported
+    // `Total Pages: 24`; it also printed 26 `Exporting:` lines, because two page
+    // attempts failed. Only one of those three numbers is about what exists.
+    const pages = signals.filter((s) => s.kind === 'page-exported');
+    expect(pages).toHaveLength(24);
+
+    const totals = signals.filter((s) => s.kind === 'total-pages');
+    expect(totals.map((t) => (t as { pages: number }).pages)).toEqual([24]);
+    expect(pages.length).toBe((totals[0] as { pages: number }).pages);
+
+    // The two pages the exporter could not write, by its own count.
+    const failed = signals.filter((s) => s.kind === 'pages-failed');
+    expect(failed.map((f) => (f as { pages: number }).pages)).toEqual([2]);
+
+    // The run finished with errors, and the app must not call it clean.
+    expect(signals.filter((s) => s.kind === 'export-partial')).toHaveLength(1);
+    expect(signals.filter((s) => s.kind === 'export-complete')).toHaveLength(0);
+
+    // Where it wrote. Sanitised in the fixture, so the shape is what matters.
+    const saved = signals.find((s) => s.kind === 'files-saved-in');
+    expect(saved).toEqual({
+      kind: 'files-saved-in',
+      dir: '/data/<session-guid>/out/The Complete Notebook',
+    });
   });
 
   it('walks the hand-written successful export end to end', () => {

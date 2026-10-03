@@ -4,6 +4,8 @@ import {
   assertGuid,
   isValidGuid,
   newSessionState,
+  normaliseSessionState,
+  relativeInside,
   sessionPaths,
 } from '../src/index';
 
@@ -116,5 +118,127 @@ describe('newSessionState', () => {
     // A different creation instant legitimately gives a different deadline;
     // what matters is that it is creation + ttl and never "now + ttl" at read time.
     expect(new Date(atElevenPm.expiresAt).getTime() - now.getTime()).not.toBe(12 * 3600_000);
+  });
+});
+
+describe('relativeInside', () => {
+  const OUT = '/data/3f2a9c1e-7b4d-4e8a-9f01-2c3d4e5f6a7b/out';
+
+  /**
+   * This is the check that stands between a line in a log and a directory the
+   * file browser will walk. The input is whatever the exporter printed, so it is
+   * data, and the output decides which directory gets read.
+   */
+  it('accepts the real shape the exporter prints', () => {
+    expect(relativeInside(OUT, `${OUT}/The Complete Notebook`)).toBe('The Complete Notebook');
+  });
+
+  it('accepts a nested path', () => {
+    expect(relativeInside(OUT, `${OUT}/Personal/Work`)).toBe('Personal/Work');
+  });
+
+  it('reports the root itself as an empty remainder, not as a refusal', () => {
+    // '' and null are different answers: one means "walk the output root", the
+    // other means "the exporter named somewhere else".
+    expect(relativeInside(OUT, OUT)).toBe('');
+    expect(relativeInside(OUT, `${OUT}/`)).toBe('');
+  });
+
+  it('refuses a sibling directory that shares a name prefix', () => {
+    // The bug a string prefix check has: '/data/<guid>' must not accept
+    // '/data/<guid>-other', which is a different session's directory.
+    const SESSION = '/data/3f2a9c1e-7b4d-4e8a-9f01-2c3d4e5f6a7b';
+    expect(relativeInside(`${SESSION}/out`, `${SESSION}/out2/secret`)).toBeNull();
+    expect(relativeInside('/data', '/database/x')).toBeNull();
+  });
+
+  it('refuses a path that climbs out with ..', () => {
+    expect(relativeInside(OUT, `${OUT}/../../3f2a9c1e-7b4d-4e8a-9f01-2c3d4e5f6a7b`)).toBeNull();
+    expect(relativeInside(OUT, '/data')).toBeNull();
+    expect(relativeInside(OUT, '/')).toBeNull();
+  });
+
+  it('refuses a parent directory outright', () => {
+    expect(relativeInside(OUT, '/data/3f2a9c1e-7b4d-4e8a-9f01-2c3d4e5f6a7b')).toBeNull();
+  });
+
+  it('refuses anything that is not a usable string', () => {
+    expect(relativeInside(OUT, '')).toBeNull();
+    expect(relativeInside(OUT, null)).toBeNull();
+    expect(relativeInside(OUT, undefined)).toBeNull();
+    expect(relativeInside(OUT, 42)).toBeNull();
+    expect(relativeInside(OUT, { toString: () => OUT })).toBeNull();
+  });
+
+  it('tolerates noise a real log might carry', () => {
+    // Trailing whitespace is stripped by the caller, but double slashes and a
+    // leading one are normal in hand-assembled paths and must not change the
+    // answer.
+    expect(relativeInside(OUT, `${OUT}//Personal//Work`)).toBe('Personal/Work');
+    expect(relativeInside(`${OUT}/`, `${OUT}/Personal`)).toBe('Personal');
+  });
+
+  it('resolves . segments rather than storing them', () => {
+    expect(relativeInside(OUT, `${OUT}/./Personal/./Work`)).toBe('Personal/Work');
+  });
+});
+
+describe('normaliseSessionState', () => {
+  const now = new Date('2026-10-03T12:00:00.000Z');
+  const GUID = '3f2a9c1e-7b4d-4e8a-9f01-2c3d4e5f6a7b';
+
+  /**
+   * Session files outlive the build that wrote them. A deploy can add a nested
+   * field between one export and the next, and the file on disk is not rewritten
+   * until something in it changes.
+   */
+  it('fills a field an older build never wrote', () => {
+    const old = { guid: GUID, export: { state: 'done', pagesExported: 24 } } as never;
+    const state = normaliseSessionState(old, GUID, now, 12);
+    expect(state.export.pagesExported).toBe(24);
+    expect(state.export.pagesFailed).toBeNull();
+    expect(state.export.outPath).toBeNull();
+  });
+
+  it('keeps the fields that were there', () => {
+    const old = {
+      guid: GUID,
+      export: { state: 'partial', pagesExported: 24, pagesFailed: 2, outPath: 'The Complete Notebook' },
+    } as never;
+    const state = normaliseSessionState(old, GUID, now, 12);
+    expect(state.export).toMatchObject({
+      state: 'partial',
+      pagesExported: 24,
+      pagesFailed: 2,
+      outPath: 'The Complete Notebook',
+    });
+  });
+
+  it('fills a whole missing section without disturbing the others', () => {
+    // A shallow spread here would replace `export` wholesale and lose
+    // pagesExported, which is the bug this guards.
+    const old = { guid: GUID, notebooks: { state: 'loaded', items: [{ name: 'Personal', url: null }] } } as never;
+    const state = normaliseSessionState(old, GUID, now, 12);
+    expect(state.notebooks.state).toBe('loaded');
+    expect(state.notebooks.items).toHaveLength(1);
+    expect(state.export.state).toBe('idle');
+    expect(state.export.pagesExported).toBe(0);
+    expect(state.export.artifact).toBeNull();
+  });
+
+  it('refuses to let the file disagree about which session it is', () => {
+    // The guid in the file is never allowed to override the one being opened:
+    // that is the only thing tying state to a directory.
+    const old = { guid: 'ffffffff-2222-3333-4444-555555555555', export: {} } as never;
+    expect(normaliseSessionState(old, GUID, now, 12).guid).toBe(GUID);
+  });
+
+  it('produces a usable state from nothing at all', () => {
+    for (const input of [null, undefined, 42, 'nonsense', [], true]) {
+      const state = normaliseSessionState(input, GUID, now, 12);
+      expect(state.guid).toBe(GUID);
+      expect(state.export.state).toBe('idle');
+      expect(new Date(state.expiresAt).getTime()).toBe(now.getTime() + 12 * 3600_000);
+    }
   });
 });

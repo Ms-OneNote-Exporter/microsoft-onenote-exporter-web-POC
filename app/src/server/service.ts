@@ -6,6 +6,8 @@ import {
   type NotebookRef,
   type SessionState,
   isValidGuid,
+  relativeInside,
+  sessionPaths,
 } from '@msout-poc/shared';
 import {
   type FlowContext,
@@ -222,7 +224,36 @@ export class Service {
     }
 
     const result = await this.collect(guid, fromSeq, trace, context);
+    this.recordOutputPath(guid, trace);
     finish(result);
+  }
+
+  /**
+   * Stores where the export wrote, re-based onto this session.
+   *
+   * The exporter's `Files saved in:` line is the authoritative answer, and it is
+   * not derivable from the notebook name: the name is user text that gets
+   * sanitised on its way to a filename, so a notebook called `a/b` and one called
+   * `a_b` land in the same directory.
+   *
+   * The line is a string from a log, so it is checked rather than trusted. If it
+   * does not resolve to somewhere inside this session's own output directory it
+   * is discarded and left null, and the file browser falls back to the output
+   * root - which is the safe direction, showing a little too much rather than
+   * reaching outside the session.
+   */
+  private recordOutputPath(guid: string, trace: JobTrace): void {
+    if (!trace.reportedOutDir) return;
+    const paths = sessionPaths(this.dataRoot, guid);
+    const relative = relativeInside(paths.outDir, trace.reportedOutDir);
+    if (relative === null) {
+      this.log(`ignoring an output path reported outside the session: ${trace.reportedOutDir}`);
+      return;
+    }
+    this.patch(guid, (s) => {
+      if (s.export.outPath === relative) return;
+      s.export.outPath = relative;
+    });
   }
 
   private flowContext(guid: string): FlowContext {
@@ -485,8 +516,10 @@ export class Service {
         notebook: target.notebook ?? null,
         notebookUrl: target.notebookUrl ?? null,
         pagesExported: 0,
+        pagesFailed: null,
         totalPages: null,
         partial: false,
+        outPath: null,
         error: null,
       };
     });

@@ -157,10 +157,27 @@ export interface SessionState {
     state: ExportState;
     notebook: string | null;
     notebookUrl: string | null;
-    /** A count, never a percentage: the packages report totals only at the end. */
+    /**
+     * Pages actually written to disk, counted from the exporter's `Saved` lines.
+     *
+     * Never a percentage: the packages report a total only at the very end, so
+     * there is no denominator to divide by while the work is running.
+     */
     pagesExported: number;
+    /** `Pages    failed: 2` from the exporter's own tally, when it gave one. */
+    pagesFailed: number | null;
     totalPages: number | null;
     partial: boolean;
+    /**
+     * Where the output landed, relative to the session directory.
+     *
+     * Taken from the exporter's `Files saved in:` line and re-based onto the
+     * session before it is stored, because the notebook name is user text that
+     * gets sanitised on its way to a filename and so cannot be used to derive
+     * the directory. Null means the line was missing or named somewhere outside
+     * the session, in which case callers fall back to the output root.
+     */
+    outPath: string | null;
     error: AppErrorCode | null;
     artifact: ArtifactState | null;
   };
@@ -183,13 +200,93 @@ export function newSessionState(guid: string, now: Date, ttlHours: number): Sess
       notebook: null,
       notebookUrl: null,
       pagesExported: 0,
+      pagesFailed: null,
       totalPages: null,
       partial: false,
+      outPath: null,
       error: null,
       artifact: null,
     },
     job: null,
     logSeq: 0,
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ * Paths: re-basing a path that came from somewhere else
+ * ------------------------------------------------------------------ */
+
+/**
+ * Splits a path into segments, resolving `.` and `..` textually.
+ *
+ * Textual rather than `node:path` because this module is also bundled for the
+ * browser, and because the answer is needed for a string that may not be a
+ * path this program produced.
+ */
+function normaliseSegments(path: string): string[] {
+  const out: string[] = [];
+  for (const segment of path.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') {
+      // Popping past the start leaves the array short, which the containment
+      // check below then rejects. `..` cannot escape.
+      out.pop();
+      continue;
+    }
+    out.push(segment);
+  }
+  return out;
+}
+
+/**
+ * The part of `candidate` that lies inside `root`, or null if it does not.
+ *
+ * This exists because a path can arrive from outside the program: the exporter
+ * prints `Files saved in: <path>`, and that string is data. Comparing segments
+ * rather than prefixes is the point - `/data` must not accept `/database`, and
+ * `out/../../other-session` must not resolve to something usable.
+ *
+ * Returns `''` when `candidate` *is* `root`, which callers read as "the root
+ * itself" and is different from null, meaning "refused".
+ */
+export function relativeInside(root: string, candidate: unknown): string | null {
+  if (typeof candidate !== 'string' || candidate.length === 0) return null;
+  const rootSegments = normaliseSegments(root);
+  const candidateSegments = normaliseSegments(candidate);
+  if (candidateSegments.length < rootSegments.length) return null;
+  for (let i = 0; i < rootSegments.length; i += 1) {
+    if (rootSegments[i] !== candidateSegments[i]) return null;
+  }
+  return candidateSegments.slice(rootSegments.length).join('/');
+}
+
+/**
+ * Fills in fields a `state.json` written by an older build does not have.
+ *
+ * Session files outlive the code that wrote them - they live for the session
+ * TTL, and a deploy can add a field in between - so every read goes through
+ * here. Merging is per section rather than a shallow spread, because the fields
+ * that get added are always nested ones (`export.pagesFailed`), and a shallow
+ * merge would let a missing section wipe out the ones beside it.
+ */
+export function normaliseSessionState(
+  raw: unknown,
+  guid: string,
+  now: Date,
+  ttlHours: number,
+): SessionState {
+  const fresh = newSessionState(guid, now, ttlHours);
+  if (typeof raw !== 'object' || raw === null) return fresh;
+  const parsed = raw as Partial<SessionState>;
+  return {
+    ...fresh,
+    ...parsed,
+    guid,
+    auth: { ...fresh.auth, ...parsed.auth },
+    mfa: { ...fresh.mfa, ...parsed.mfa },
+    notebooks: { ...fresh.notebooks, ...parsed.notebooks },
+    export: { ...fresh.export, ...parsed.export },
+    job: parsed.job === undefined ? null : parsed.job,
   };
 }
 

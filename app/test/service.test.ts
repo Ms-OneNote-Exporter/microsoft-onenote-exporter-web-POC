@@ -189,7 +189,13 @@ class FakeRunner {
       { stream: 'stdout', text: '[2026-10-02 21:20:19+02:00] [INFO] Exporting notebook: Personal' },
     ];
     for (let i = 0; i < pages; i += 1) {
-      lines.push({ stream: 'stdout', text: `[2026-10-02 21:20:2${i}+02:00] [INFO] Exporting: Page ${i + 1} ...` });
+      // Both lines, in the order the real package emits them: `Exporting:`
+      // when the page starts, `Saved` once the file is on disk. Only the second
+      // is counted, so a page that starts and never finishes is not counted.
+      lines.push(
+        { stream: 'stdout', text: `[2026-10-02 21:20:2${i}+02:00] [INFO] Exporting: Page ${i + 1} ...` },
+        { stream: 'stdout', text: `[2026-10-02 21:20:2${i}+02:00] [SUCCESS] Saved (0 assets)` },
+      );
     }
     lines.push(
       { stream: 'stdout', text: `[2026-10-02 21:20:28+02:00] [INFO] Total Pages: ${pages}` },
