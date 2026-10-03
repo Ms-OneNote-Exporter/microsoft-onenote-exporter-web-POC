@@ -2,9 +2,12 @@
 node_modules/
 .npm/
 
-# Build output
+# Build output. shared/dist is generated too: the app and runner consume its
+# emitted types, and committing compiled output means a stale copy can disagree
+# with the source it was built from.
 app/dist/
 runner/dist/
+shared/dist/
 
 # Live session data - this is where auth.json, exported notebooks and logs land.
 # It must never be committed: it contains Microsoft cookies and note content.
