@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AppEvent, SessionState } from '@msout-poc/shared';
+import { shouldReconnect, streamReconnectDelayMs } from '@msout-poc/shared';
 import { api, type UiLogLine } from './api';
 import { Landing } from './pages/Landing';
 import { SessionPage } from './pages/SessionPage';
@@ -50,8 +51,13 @@ export function App() {
  * `reconnecting` is surfaced rather than hidden: EventSource retries silently,
  * and a user watching a "running" indicator that has stopped receiving events
  * would otherwise conclude the export had stalled.
+ *
+ * `enabled` gates the connection. The page reads the session first, so a GUID
+ * that was never created - a stale tab, a typo, a pasted link - is answered once
+ * with a 404 and shown as "no such session", instead of opening a stream that
+ * will 404 on every reconnect for as long as the tab is open.
  */
-export function useSession(guid: string): {
+export function useSession(guid: string, enabled = true): {
   state: SessionState | null;
   logs: UiLogLine[];
   connected: boolean;
@@ -115,9 +121,11 @@ export function useSession(guid: string): {
   }, []);
 
   useEffect(() => {
+    if (!enabled) return;
     let source: EventSource | null = null;
     let retry: number | null = null;
     let closed = false;
+    let attempts = 0;
 
     const connect = (): void => {
       if (closed) return;
@@ -139,10 +147,15 @@ export function useSession(guid: string): {
         setConnected(false);
         source?.close();
         if (closed) return;
-        // EventSource would retry on its own, but it cannot know the server is
-        // gone. A short explicit backoff reconnects with the last id so the
-        // stream resumes rather than restarting.
-        retry = window.setTimeout(connect, 1500);
+        attempts += 1;
+        if (!shouldReconnect(attempts)) {
+          // The session is gone, or the server is. Either way, a tab that keeps
+          // asking is a bug with a bandwidth cost, not resilience.
+          setError('Lost contact with the server. Reload to try again.');
+          return;
+        }
+        // Backing off, so a server that is down is not asked 1.5 s apart.
+        retry = window.setTimeout(connect, streamReconnectDelayMs(attempts));
       };
     };
 
@@ -155,7 +168,7 @@ export function useSession(guid: string): {
       if (retry !== null) window.clearTimeout(retry);
       source?.close();
     };
-  }, [guid, apply]);
+  }, [guid, apply, enabled]);
 
   return { state, logs, connected, error };
 }

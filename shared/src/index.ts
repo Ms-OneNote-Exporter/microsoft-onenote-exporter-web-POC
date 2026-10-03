@@ -281,3 +281,47 @@ export interface LogLine {
   /** The line exactly as emitted, kept so `unknown` failures stay diagnosable. */
   raw: string;
 }
+/* ------------------------------------------------------------------ *
+ * Event stream: when a client may keep asking
+ * ------------------------------------------------------------------ */
+
+/**
+ * How many times a browser re-opens the event stream before it stops.
+ *
+ * This number exists because of an observed failure, not a hypothetical one. The
+ * first version of the UI reconnected 1.5 s after any error, including the 404
+ * it received for a session that did not exist. A single tab left open produced
+ * `GET /api/session/events` every two seconds for as long as it stayed open -
+ * hundreds of logged requests while the server was otherwise idle - and the tab
+ * would have kept it up indefinitely.
+ *
+ * Six attempts is roughly a minute of trying, which covers a container restart
+ * and a brief network drop. Past that the honest answer is "this is not coming
+ * back", and the user is told to reload rather than being left watching a
+ * session that stopped reporting.
+ */
+export const MAX_STREAM_RECONNECTS = 6;
+
+/**
+ * Delay before the `attempt`-th reconnect, in milliseconds.
+ *
+ * Linear backoff to a ceiling: linear rather than exponential because the
+ * realistic causes are short (a restart, a deploy), and exponential would push
+ * the sixth attempt out past a minute, by which point the cap has usually been
+ * reached and the user should be told to reload. Capped so that no attempt is
+ * more than ten seconds away.
+ */
+export function streamReconnectDelayMs(attempt: number): number {
+  if (!Number.isFinite(attempt) || attempt < 1) return 1000;
+  return Math.min(1000 * Math.floor(attempt), 10_000);
+}
+
+/**
+ * Whether to re-open the stream after `attempt` consecutive failures.
+ *
+ * `attempt` is 1-based: pass the count of failures so far. Six failures means
+ * stop.
+ */
+export function shouldReconnect(attempt: number): boolean {
+  return Number.isFinite(attempt) && attempt <= MAX_STREAM_RECONNECTS;
+}

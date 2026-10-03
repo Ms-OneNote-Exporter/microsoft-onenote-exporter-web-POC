@@ -16,20 +16,26 @@ import { LogPanel } from '../components/LogPanel';
  * is currently typing.
  */
 export function SessionPage({ guid, onErased }: { guid: string; onErased: () => void }) {
-  const { state, logs, connected, error } = useSession(guid);
   const [selected, setSelected] = useState<{ name: string; url: string | null } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
-  const [missing, setMissing] = useState(false);
+  // null while the first read is in flight, then the answer. The stream is only
+  // opened for a session that exists.
+  const [exists, setExists] = useState<boolean | null>(null);
+  const { state, logs, connected, error } = useSession(guid, exists === true);
 
   // A session that was erased or has expired must not keep rendering as if it
-  // were alive. One check on mount is enough: the server answers 404 and the
-  // stream closes.
+  // were alive, and must not open an event stream that will 404 on every
+  // reconnect. One read answers it, and the stream waits for the answer.
   useEffect(() => {
     let cancelled = false;
+    setExists(null);
     api
       .readSession(guid)
+      .then(() => {
+        if (!cancelled) setExists(true);
+      })
       .catch(() => {
-        if (!cancelled) setMissing(true);
+        if (!cancelled) setExists(false);
       });
     return () => {
       cancelled = true;
@@ -52,7 +58,7 @@ export function SessionPage({ guid, onErased }: { guid: string; onErased: () => 
     });
   }, [guid, onErased, run]);
 
-  if (missing) {
+  if (exists === false) {
     return (
       <main className="landing">
         <h1>No such session</h1>
@@ -67,7 +73,7 @@ export function SessionPage({ guid, onErased }: { guid: string; onErased: () => 
     );
   }
 
-  if (!state) {
+  if (exists === null || !state) {
     return (
       <main className="session">
         <p className="lead">Loading your session…</p>

@@ -68,6 +68,24 @@ suite drives the flow, and it is a fair way to see the UI.
 
 It does **not** prove anything about Microsoft.
 
+### If the app stops answering
+
+`data/` is a bind mount. Deleting it on the host **while the stack is running**
+leaves the mount pointing at nothing, and the next write inside a request handler
+never returns: the request hangs, the event loop goes with it, and the container
+keeps reporting `Up` while refusing every connection.
+
+```bash
+docker compose down
+rm -rf data            # safe only while nothing is running
+docker compose up -d   # recreates the host directory
+```
+
+The app now probes `DATA_ROOT` for existence and writability before it starts
+listening, so a bad mount is an exit with a readable reason rather than a silent
+hang. That covers a broken mount at boot — not one created underneath a running
+process, which nothing inside the container can recover from.
+
 ## Layout
 
 ```

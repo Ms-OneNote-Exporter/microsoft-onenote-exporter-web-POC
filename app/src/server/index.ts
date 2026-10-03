@@ -5,7 +5,7 @@ import { Service } from './service';
 import { SessionStore } from './session-store';
 import { SseHub } from './sse';
 import { Sweeper } from './sweeper';
-import { type AppConfig, loadConfig } from './config';
+import { type AppConfig, assertDataUsable, loadConfig } from './config';
 
 /**
  * Composition root.
@@ -40,6 +40,9 @@ export function buildService(config: AppConfig): {
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  // Before anything can serve a request. See assertDataUsable for what happens
+  // when a dangling bind mount is discovered later instead.
+  assertDataUsable(config.dataRoot);
   const { service, store, queue } = buildService(config);
 
   const server = await buildServer(config, service);

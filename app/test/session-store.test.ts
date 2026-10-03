@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -240,5 +240,60 @@ describe('SessionStore', () => {
         expect(() => JSON.parse(content)).not.toThrow();
       }
     });
+  });
+});
+describe('assertDataUsable', () => {
+  /**
+   * The probe that stops a dangling bind mount from becoming a hang.
+   *
+   * Deleting the host directory while the stack is running leaves the mount
+   * pointing at nothing: the next `mkdir` in a request handler never returns, the
+   * request hangs, the event loop goes with it, and the process keeps answering
+   * `docker ps` while refusing every connection. A boot-time probe turns that into
+   * an exit with a readable reason.
+   */
+  it('passes for a directory that exists and is writable', async () => {
+    const { assertDataUsable } = await import('../src/server/config');
+    const dir = mkdtempSync(join(tmpdir(), 'msout-boot-'));
+    try {
+      expect(() => assertDataUsable(dir)).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('creates a missing data root rather than failing on it', async () => {
+    const { assertDataUsable } = await import('../src/server/config');
+    const parent = mkdtempSync(join(tmpdir(), 'msout-boot-'));
+    const missing = join(parent, 'data');
+    try {
+      assertDataUsable(missing);
+      expect(existsSync(missing)).toBe(true);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('explains itself when the data root is a file, not a directory', async () => {
+    const { assertDataUsable } = await import('../src/server/config');
+    const parent = mkdtempSync(join(tmpdir(), 'msout-boot-'));
+    const asFile = join(parent, 'data');
+    writeFileSync(asFile, 'not a directory');
+    try {
+      expect(() => assertDataUsable(asFile)).toThrow(/DATA_ROOT/);
+    } finally {
+      rmSync(parent, { recursive: true, force: true });
+    }
+  });
+
+  it('leaves no probe file behind on success', async () => {
+    const { assertDataUsable } = await import('../src/server/config');
+    const dir = mkdtempSync(join(tmpdir(), 'msout-boot-'));
+    try {
+      assertDataUsable(dir);
+      expect(readdirSync(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
