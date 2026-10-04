@@ -15,7 +15,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@msout/microsoft-onenote-export-notebook": "0.3.7",
+    "@msout/microsoft-onenote-export-notebook": "0.4.0",
     "@msout/microsoft-onenote-list-notebooks": "0.0.7",
     "@msout/microsoft-webauth": "0.1.9",
     "archiver": "7.0.1",
