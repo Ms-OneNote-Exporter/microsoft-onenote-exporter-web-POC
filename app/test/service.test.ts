@@ -212,6 +212,56 @@ class FakeRunner {
   }
 
   /**
+   * 0.4.0's run that reached OneNote and found no section list - the expired or
+   * refused sign-in case. Nothing is written and the process exits 3.
+   *
+   * The wording is the package's own, from the logger calls in its
+   * `reportSummary`, including the ERROR on stderr because that is the stream
+   * the real loggers put ERROR on.
+   */
+  scriptExportStaleAuth(): this {
+    this.writeExportDir(GUID);
+    return this.script({
+      lines: [
+        { stream: 'stdout', text: '[2026-10-04 19:08:30+00:00] [INFO] Exporting notebook: Personal' },
+        {
+          stream: 'stderr',
+          text: '[2026-10-04 19:08:36+00:00] [ERROR] Nothing was exported: the section list for this notebook was never found.',
+        },
+        { stream: 'stdout', text: '[2026-10-04 19:08:36+00:00] [WARN]   This is what an expired or refused sign-in looks like, and what a' },
+        { stream: 'stdout', text: '[2026-10-04 19:08:36+00:00] [WARN]   OneNote error page served instead of the notebook looks like.' },
+        { stream: 'stdout', text: '[2026-10-04 19:08:36+00:00] [WARN]   No notes or assets were written, so an existing export is untouched.' },
+        { stream: 'stdout', text: '[2026-10-04 19:08:37+00:00] [INFO] Total Pages: 0' },
+        { stream: 'stdout', text: '[2026-10-04 19:08:37+00:00] [INFO] Total Assets: 0' },
+        { stream: 'stdout', text: `[2026-10-04 19:08:37+00:00] [INFO] Files saved in: /data/${GUID}/out/Personal` },
+      ],
+      result: { code: 3 },
+    });
+  }
+
+  /**
+   * 0.4.0's run where every section failed to open - a real outcome when a
+   * Microsoft modal covers the section list. The summary says the run finished
+   * with errors, `Total Pages: 0`, and nothing reached the disk.
+   */
+  scriptExportNothingWritten(): this {
+    this.writeExportDir(GUID);
+    return this.script({
+      lines: [
+        { stream: 'stdout', text: '[2026-10-04 19:02:31+00:00] [INFO] Exporting notebook: Personal' },
+        { stream: 'stdout', text: '[2026-10-04 19:02:31+00:00] [WARN] No sections or groups found at the top level. The notebook may be empty, or the OneNote DOM may have changed.' },
+        { stream: 'stderr', text: '[2026-10-04 19:04:02+00:00] [ERROR] Failed to select section Section w Medias:' },
+        { stream: 'stdout', text: '[2026-10-04 19:08:37+00:00] [WARN] Export finished with errors - 3 item(s) could not be exported.' },
+        { stream: 'stdout', text: '[2026-10-04 19:08:37+00:00] [WARN]   Sections failed: 3' },
+        { stream: 'stdout', text: '[2026-10-04 19:08:37+00:00] [INFO] Total Pages: 0' },
+        { stream: 'stdout', text: '[2026-10-04 19:08:37+00:00] [INFO] Total Assets: 0' },
+        { stream: 'stdout', text: `[2026-10-04 19:08:37+00:00] [INFO] Files saved in: /data/${GUID}/out/Personal` },
+      ],
+      result: { code: 3 },
+    });
+  }
+
+  /**
    * Writes the auth file a successful login leaves behind.
    *
    * A fake that logged "Authentication successful!" without creating the file
@@ -714,6 +764,58 @@ describe('Service', () => {
       expect(state.export.partial).toBe(false);
     });
 
+    /**
+     * The outcome that used to read as a generic failure with no next step. The
+     * user needs to know their Microsoft session died, because signing in again
+     * is the fix and reading the log is not.
+     */
+    it('reports an expired session when no section list was found', async () => {
+      await signedIn();
+      harness.runner.scriptExportStaleAuth();
+      void harness.service.exportNotebook(GUID, { notebook: 'Personal' });
+      await waitForState((s) => s.export.state === 'running', 'export to start');
+      harness.runner.endJob(GUID, { kind: 'export', code: 3 });
+
+      const state = await waitForState((s) => s.export.state === 'failed', 'export to fail');
+      expect(state.export.error).toBe('auth_expired');
+      expect(state.export.partial).toBe(false);
+      // The panel that offers the zip is driven off this being present.
+      expect(state.export.artifact).toBeNull();
+      expect(state.job?.error).toBe('auth_expired');
+    });
+
+    /**
+     * The claim being taken back. `partial` is what puts "Download partial
+     * export (.zip)" on the page, and this run wrote nothing at all.
+     */
+    it('reports a failed export, with nothing to download, when no pages landed', async () => {
+      await signedIn();
+      harness.runner.scriptExportNothingWritten();
+      void harness.service.exportNotebook(GUID, { notebook: 'Personal' });
+      await waitForState((s) => s.export.state === 'running', 'export to start');
+      harness.runner.endJob(GUID, { kind: 'export', code: 3 });
+
+      const state = await waitForState((s) => s.export.state === 'failed', 'export to fail');
+      expect(state.export.error).toBe('export_failed');
+      expect(state.export.partial).toBe(false);
+      expect(state.export.pagesExported).toBe(0);
+      expect(state.export.totalPages).toBe(0);
+      expect(state.export.artifact).toBeNull();
+    });
+
+    it('still offers the download when some pages did land', async () => {
+      await signedIn();
+      harness.runner.scriptExport(2, true);
+      void harness.service.exportNotebook(GUID, { notebook: 'Personal' });
+      await waitForState((s) => s.export.state === 'running', 'export to start');
+      harness.runner.endJob(GUID, { kind: 'export', code: 0 });
+
+      const state = await waitForState((s) => s.export.state === 'partial', 'export to end');
+      expect(state.export.error).toBe('export_partial');
+      expect(state.export.partial).toBe(true);
+      expect(state.export.pagesExported).toBe(2);
+    });
+
     it('prefers the notebook url when one is given', async () => {
       await signedIn();
       harness.runner.scriptExportSuccess(1);
@@ -746,25 +848,42 @@ describe('Service', () => {
       expect(state.export.error).toBe('aborted');
     });
 
+    /**
+     * A partial run that did write something, which is what keeps it partial.
+     *
+     * This scripted only `Exporting: Page 1 ...`, so it described a page that
+     * started and never landed. That was the shape before pages were counted from
+     * `Saved` lines rather than start lines, and it now describes a run where
+     * nothing reached disk - which is reported as a failure, correctly, and is
+     * the case two tests above covers. The intent here is the other half: some
+     * pages land, some do not, and the result must not read as clean.
+     */
     it('marks an export with item failures partial rather than clean', async () => {
       await signedIn();
       harness.runner.script({
         lines: [
           { stream: 'stdout', text: '[2026-10-02 21:20:19+02:00] [INFO] Exporting notebook: Personal' },
           { stream: 'stdout', text: '[2026-10-02 21:20:20+02:00] [INFO] Exporting: Page 1 ...' },
+          { stream: 'stdout', text: '[2026-10-02 21:20:22+02:00] [SUCCESS] Saved (0 assets)' },
+          { stream: 'stdout', text: '[2026-10-02 21:20:23+02:00] [INFO] Exporting: Page 2 ...' },
+          { stream: 'stdout', text: '[2026-10-02 21:20:24+02:00] [SUCCESS] Saved (2 assets)' },
           { stream: 'stdout', text: '[2026-10-02 21:22:10+02:00] [WARN] Export finished with errors - 3 item(s) could not be exported.' },
-          { stream: 'stdout', text: '[2026-10-02 21:22:10+02:00] [INFO] Total Pages: 41' },
+          { stream: 'stdout', text: '[2026-10-02 21:22:10+02:00] [INFO] Total Pages: 5' },
         ],
-        result: { code: 0 },
+        result: { code: 3 },
       });
       void harness.service.exportNotebook(GUID, { notebook: 'Personal' });
       await waitForState((s) => s.export.state === 'running', 'export to start');
-      harness.runner.endJob(GUID, { kind: 'export', code: 0 });
+      harness.runner.endJob(GUID, { kind: 'export', code: 3 });
 
       const state = await waitForState((s) => s.export.state === 'partial', 'export to be partial');
       // A partial run must never look like a clean one.
       expect(state.export.state).not.toBe('done');
-      expect(state.export.totalPages).toBe(41);
+      expect(state.export.totalPages).toBe(5);
+      expect(state.export.pagesExported).toBe(2);
+      // And it must still be downloadable, which is the difference from the
+      // nothing-was-written case.
+      expect(state.export.partial).toBe(true);
     });
 
     it('reports a dead OneNote tab as a failure', async () => {

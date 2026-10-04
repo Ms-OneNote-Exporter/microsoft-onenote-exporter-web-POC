@@ -212,15 +212,70 @@ describe('fake export', () => {
     expect(existsSync(join(nb, 'assets'))).toBe(true);
   });
 
-  it('reports a partial run without failing', async () => {
+  /**
+   * Exits 3, not 0 and not 1.
+   *
+   * This asserted 0 until 0.4.0 was adopted, which was the fake lying: the real
+   * package has exited 3 for a partial run since 0.3.x, and the whole reason it
+   * separates 3 from 1 is that a supervisor must treat them differently - 1
+   * means start over, 3 means most of it is fine and retrying would throw away a
+   * mostly-good vault. A fake that exits 0 cannot exercise that distinction.
+   */
+  it('reports a partial run and exits 3, not 0 and not 1', async () => {
     const { authFile, outDir } = authed();
     const r = await run('export.ts', ['--auth-file', authFile, '--output-dir', outDir, '--non-interactive', '--notebook', 'Personal'], {
       env: { FAKE_EXPORT_MODE: 'partial', FAKE_EXPORT_PAGES: '2', FAKE_EXPORT_PAGE_MS: '1' },
     });
-    expect(r.code).toBe(0);
+    expect(r.code).toBe(3);
     expect(r.stdout).toContain('Export finished with errors - 1 item(s) could not be exported.');
     // A partial run must not look like a clean one.
     expect(r.stdout).not.toContain('Export complete!');
+  });
+
+  /**
+   * The run that found no section list, which 0.4.0 names as the expired-or-
+   * refused-sign-in case. The exact wording is the package's, from the logger
+   * calls in its `reportSummary`.
+   */
+  it('reproduces 0.4.0\'s no-section-list run and exits 3', async () => {
+    const { authFile, outDir } = authed();
+    const r = await run('export.ts', ['--auth-file', authFile, '--output-dir', outDir, '--non-interactive', '--notebook', 'Personal'], {
+      env: { FAKE_EXPORT_MODE: 'staleauth' },
+    });
+    expect(r.code).toBe(3);
+    // The one line that matters is an ERROR, and the real loggers put ERROR on
+    // stderr - so asserting it on stdout would be asserting the fake is wrong.
+    expect(r.stderr).toContain(
+      'Nothing was exported: the section list for this notebook was never found.',
+    );
+    expect(r.stdout).toContain('This is what an expired or refused sign-in looks like');
+    expect(r.stdout).toContain('Total Pages: 0');
+    // The most important thing it must not say.
+    expect(r.stdout).not.toContain('Export complete!');
+    // The package leaves the empty folder behind rather than deleting a
+    // directory after a failed run.
+    expect(existsSync(join(outDir, 'Personal'))).toBe(true);
+  });
+
+  /**
+   * The run where every section failed to open: a real 0.4.0 outcome when a
+   * Microsoft modal covers the section list. The summary says "finished with
+   * errors" while nothing at all reached the disk.
+   */
+  it('reproduces a run that wrote nothing and calls itself partial', async () => {
+    const { authFile, outDir } = authed();
+    const r = await run('export.ts', ['--auth-file', authFile, '--output-dir', outDir, '--non-interactive', '--notebook', 'Personal'], {
+      env: { FAKE_EXPORT_MODE: 'blocked' },
+    });
+    expect(r.code).toBe(3);
+    expect(r.stdout).toContain('Export finished with errors - 3 item(s) could not be exported.');
+    expect(r.stdout).toContain('Sections failed: 3');
+    expect(r.stdout).toContain('Total Pages: 0');
+    expect(r.stdout).not.toContain('Export complete!');
+    // No page reached the disk, which is what makes this a failed export rather
+    // than a partial one.
+    const nb = join(outDir, 'Personal');
+    expect(existsSync(nb) ? readdirSync(nb).filter((f) => f.endsWith('.md')) : []).toEqual([]);
   });
 
   it('reports an early stop as partial, never as complete', async () => {

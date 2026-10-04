@@ -189,6 +189,64 @@ done
 contains "$BAD" '"state":"failed"' 'a failed login is failed'
 contains "$BAD" '"error":"bad_credentials"' 'and carries an actionable code'
 
+say "a run that reached OneNote and found no notebook asks for a new sign-in"
+# The 0.4.0 outcome. Before it, this run printed `Export complete!` with
+# `Total Pages: 0` and exited 0, and this app showed a successful export
+# containing nothing. Checked here because the two 0.4.0 outcomes are both
+# failures: a global FAKE_EXPORT_MODE could only produce one at a time, so each
+# session picks its own with the file the fake reads beside its auth.json.
+NOSEC="33333333-3333-4333-8333-333333333333"
+curl -s -X POST "http://127.0.0.1:$APP_PORT/api/session?guid=$NOSEC" >/dev/null
+curl -s -X POST "http://127.0.0.1:$APP_PORT/api/session/credentials?guid=$NOSEC" \
+  -H 'content-type: application/octet-stream' \
+  --data-binary '{"email":"smoke@example.invalid","password":"whatever"}' >/dev/null
+for _ in $(seq 1 40); do
+  S=$(curl -s "http://127.0.0.1:$APP_PORT/api/session?guid=NOSEC")
+  printf '%s' "$S" | grep -q '"state":"valid"' && break
+  sleep 0.25
+done
+echo staleauth > "$DATA/$NOSEC/fake-export-mode"
+curl -s -X POST "http://127.0.0.1:$APP_PORT/api/session/export?guid=$NOSEC" \
+  -H 'content-type: application/json' --data '{"notebook":"Personal"}' >/dev/null
+for _ in $(seq 1 60); do
+  NOS=$(curl -s "http://127.0.0.1:$APP_PORT/api/session?guid=$NOSEC")
+  printf '%s' "$NOS" | grep -qE '"state":"(failed|partial|done)"' && break
+  sleep 0.25
+done
+contains "$NOS" '"error":"auth_expired"' 'an unreachable notebook is reported as an expired session'
+contains "$NOS" '"partial":false' 'and nothing is offered as a partial download'
+# The wording the user reads is not checked here: a session carries the error
+# *code*, and the browser turns it into text through ERROR_TEXT. Asserting on the
+# message at this layer would be asserting on a string the API never sends. The
+# wording is covered where it is produced, in export-outcome.test.ts.
+
+say "an export that wrote nothing is failed, not partial"
+# A real 0.4.0 outcome when a Microsoft modal covers the section list: the run
+# reports "finished with errors" and `Total Pages: 0`, with nothing on disk.
+NOWT="44444444-4444-4444-8444-444444444444"
+curl -s -X POST "http://127.0.0.1:$APP_PORT/api/session?guid=$NOWT" >/dev/null
+curl -s -X POST "http://127.0.0.1:$APP_PORT/api/session/credentials?guid=$NOWT" \
+  -H 'content-type: application/octet-stream' \
+  --data-binary '{"email":"smoke@example.invalid","password":"whatever"}' >/dev/null
+for _ in $(seq 1 40); do
+  S=$(curl -s "http://127.0.0.1:$APP_PORT/api/session?guid=NOWT")
+  printf '%s' "$S" | grep -q '"state":"valid"' && break
+  sleep 0.25
+done
+echo blocked > "$DATA/$NOWT/fake-export-mode"
+curl -s -X POST "http://127.0.0.1:$APP_PORT/api/session/export?guid=$NOWT" \
+  -H 'content-type: application/json' --data '{"notebook":"Personal"}' >/dev/null
+for _ in $(seq 1 60); do
+  NWT=$(curl -s "http://127.0.0.1:$APP_PORT/api/session?guid=$NOWT")
+  printf '%s' "$NWT" | grep -qE '"state":"(failed|partial|done)"' && break
+  sleep 0.25
+done
+contains "$NWT" '"state":"failed"' 'a run that wrote nothing is failed'
+contains "$NWT" '"error":"export_failed"' 'not partial'
+# `partial` is what puts the download button on the page, and there is no file.
+contains "$NWT" '"artifact":null' 'and no zip is offered'
+contains "$NWT" '"pagesExported":0' 'having counted no pages, honestly'
+
 say "export before signing in is refused"
 FRESH="11111111-2222-4333-8444-555555555555"
 curl -s -X POST "http://127.0.0.1:$APP_PORT/api/session?guid=$FRESH" >/dev/null

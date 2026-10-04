@@ -14,12 +14,16 @@
  *   FAKE_EXPORT_MODE=crash     the unhandled-rejection path, exit 1
  *   FAKE_EXPORT_MODE=slow      long run, for interrupting and for job timeouts
  *   FAKE_EXPORT_MODE=nolink    no target given: the --non-interactive fail-fast
+ *   FAKE_EXPORT_MODE=staleauth 0.4.0's expired-or-refused-sign-in path: no
+ *                              section list found, nothing written, exit 3
+ *   FAKE_EXPORT_MODE=blocked   0.4.0 run where every section failed to open:
+ *                              "finished with errors", zero pages written, exit 3
  *
  * FAKE_EXPORT_PAGES overrides the page count, FAKE_EXPORT_PAGE_MS the delay
  * between pages.
  */
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { makeLogger, parseArgs, sleep } from './logger';
 
 const log = makeLogger('isoWithOffset');
@@ -41,7 +45,17 @@ async function main() {
   const notebook = args.notebook;
   const notebookLink = args['notebook-link'];
   const outputDir = args['output-dir'] ?? './output';
-  const mode = process.env.FAKE_EXPORT_MODE ?? 'ok';
+  let mode = process.env.FAKE_EXPORT_MODE ?? 'ok';
+  // `fake-export-mode` beside the auth file, the same override `check` takes.
+  // FAKE_EXPORT_MODE alone is global to the runner, so a test that needs one
+  // session to fail could not leave another session succeeding. A file in the
+  // session directory is the smallest way to make one session's outcome differ
+  // from another's - which is exactly what the two 0.4.0 outcomes need, since
+  // they are both *failures* and would otherwise have to be run one at a time.
+  const override = join(dirname(authFile ?? '.'), 'fake-export-mode');
+  if (authFile && existsSync(override)) {
+    mode = readFileSync(override, 'utf8').trim() || mode;
+  }
   const total = Number.parseInt(process.env.FAKE_EXPORT_PAGES ?? '8', 10);
   const perPageMs = Number.parseInt(process.env.FAKE_EXPORT_PAGE_MS ?? '250', 10);
 
@@ -86,8 +100,48 @@ async function main() {
     return;
   }
 
+  if (mode === 'staleauth') {
+    // 0.4.0's summary for a run that never found a section list, which it says
+    // is what an expired or refused sign-in looks like. Before 0.4.0 this case
+    // printed `Export complete!` with `Total Pages: 0` and exited 0.
+    //
+    // The folder is still created and left behind, exactly as the real package
+    // does: an empty notebook folder named after whatever the page's <title>
+    // was. Removing it would mean deleting a directory after a failed run.
+    const staleDir = join(outputDir, name.replace(/[\\/:*?"<>|]/g, '-'));
+    mkdirSync(staleDir, { recursive: true });
+    await sleep(300);
+    log('ERROR', 'Nothing was exported: the section list for this notebook was never found.');
+    log('WARN', '  This is what an expired or refused sign-in looks like, and what a');
+    log('WARN', '  OneNote error page served instead of the notebook looks like.');
+    log('WARN', '  No notes or assets were written, so an existing export is untouched.');
+    log('WARN', '  Re-authenticate and re-run. Use --dodump if it repeats: the page');
+    log('WARN', '  that came up is written to logs/dumps.');
+    log('INFO', 'Total Pages: 0');
+    log('INFO', 'Total Assets: 0');
+    log('INFO', `Files saved in: ${staleDir}`);
+    // `exitCodeForStats` counts notebookNotFound as missing since 0.4.0.
+    process.exitCode = 3;
+    return;
+  }
+
   const nbDir = join(outputDir, name.replace(/[\\/:*?"<>|]/g, '-'));
   mkdirSync(nbDir, { recursive: true });
+
+  if (mode === 'blocked') {
+    // Real 0.4.0 output when a Microsoft modal covered the section list and every
+    // section failed to open: the summary says "finished with errors" and
+    // `Total Pages: 0`, and nothing at all reached the disk. The honest reading is
+    // a failed export, not a partial one.
+    log('WARN', 'Export finished with errors - 3 item(s) could not be exported.');
+    log('WARN', '  Sections failed: 3');
+    log('WARN', '  See the errors above and logs/app.log for details.');
+    log('INFO', 'Total Pages: 0');
+    log('INFO', 'Total Assets: 0');
+    log('INFO', `Files saved in: ${nbDir}`);
+    process.exitCode = 3;
+    return;
+  }
 
   log('STEP', '[Section] Notes');
   log('INFO', `Found ${total} pages. Starting extraction...`);
@@ -139,6 +193,15 @@ async function main() {
   log('INFO', `Total Assets: ${assets}`);
   log('INFO', 'Internal links: 3 resolved, 0 unresolved');
   log('INFO', `Files saved in: ${nbDir}`);
+
+  // `exitCodeForStats`: 3 when items are missing from the vault, 0 when not.
+  // A partial run has pages missing, so it exits 3 - which is the whole reason
+  // the package distinguishes 3 from 1. A supervisor must not retry this one.
+  //
+  // Note the contrast with `stopped` above, which exits 0: nothing failed there,
+  // the run was cut short, so there is nothing to retry and nothing missing from
+  // a *completed* attempt.
+  if (mode === 'partial') process.exitCode = 3;
 }
 
 void main();

@@ -56,6 +56,19 @@ export type Signal =
   | { kind: 'export-complete' }
   /** The export finished with per-item failures. */
   | { kind: 'export-partial' }
+  /**
+   * 0.4.0's line for a run that found no section list at all.
+   *
+   * The package says plainly that this is what an expired or refused sign-in
+   * looks like, and that nothing was written. Before 0.4.0 the same situation
+   * printed `Export complete!` with `Total Pages: 0` and exited 0 - a green
+   * successful export containing nothing, which this app believed and displayed.
+   *
+   * Keyed on the ERROR line rather than the warnings under it, because that is
+   * the one the package emits unconditionally in this case and the warnings are
+   * prose that could be reworded.
+   */
+  | { kind: 'export-no-sections' }
   /** The export stopped early. */
   | { kind: 'export-stopped' }
   /** The OneNote tab died mid-run. */
@@ -124,6 +137,8 @@ export function parseLine(raw: string): ParsedLine {
 const FILES_SAVED_RE = /^Files saved in:\s*(.+?)\s*$/;
 /** `  Pages    failed: 2` - the per-category failure tally. */
 const PAGES_FAILED_RE = /^Pages\s+failed:\s*(\d+)\s*$/;
+/** `Nothing was exported: the section list for this notebook was never found.` */
+const NO_SECTIONS_RE = /^Nothing was exported: the section list for this notebook was never found\.$/;
 /** `1. Personal (https://…)` - the only machine-ish output the lister has. */
 const NOTEBOOK_RE = /^\s*(\d+)\.\s+(.+?)\s+\((https?:\/\/[^)]+)\)\s*$/;
 
@@ -214,6 +229,7 @@ export function classify(text: string): Signal {
   if (/^(?:Error:\s*)?Authentication file not found:/i.test(line)) return { kind: 'no-auth' };
 
   // --- export outcome --------------------------------------------------
+  if (NO_SECTIONS_RE.test(line)) return { kind: 'export-no-sections' };
   if (/^Export complete!/i.test(line)) return { kind: 'export-complete' };
   if (/^Export (finished with errors|stopped early)/i.test(line)) return { kind: 'export-partial' };
   if (/^Unexpected internal failure during the export/i.test(line)) return { kind: 'export-crashed' };

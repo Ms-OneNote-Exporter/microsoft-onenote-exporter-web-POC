@@ -40,6 +40,11 @@ export interface JobTrace {
   checkReason: string | null;
   sawExportComplete: boolean;
   sawExportPartial: boolean;
+  /**
+   * 0.4.0 said the run found no section list - the expired-or-refused sign-in
+   * case - and wrote nothing.
+   */
+  sawNoSections: boolean;
   sawExportCrashed: boolean;
   mfaRequested: boolean;
   mfaNumber: string | null;
@@ -63,6 +68,7 @@ export function newTrace(): JobTrace {
     sawCheckAuthenticated: false,
     checkReason: null,
     sawExportPartial: false,
+    sawNoSections: false,
     sawExportCrashed: false,
     mfaRequested: false,
     mfaNumber: null,
@@ -146,6 +152,10 @@ export function absorbLine(
 
     case 'notebooks':
       trace.notebooks.push(parsed.text);
+      return;
+
+    case 'export-no-sections':
+      trace.sawNoSections = true;
       return;
 
     case 'files-saved-in':
@@ -343,6 +353,37 @@ export function judgeExport(trace: JobTrace, result: JobResult): JobOutcome {
     // export whose remaining pages were never attempted, so it is reported as the
     // failure it is rather than dressed up as a partial success.
     return { ok: false, error: 'crashed', message: ERROR_TEXT.crashed, partial: false };
+  }
+  /**
+   * A run that found no section list at all.
+   *
+   * `auth_expired` rather than `export_failed`, because that is what it is: the
+   * package reached OneNote and OneNote did not show it a notebook. The message
+   * the user gets matters more than the label here - "sign in again, your
+   * exports are still here" is the next action, where "the export failed, see
+   * the log" sends them to a log that will not help.
+   *
+   * `partial: false` because the package says nothing was written, so there is
+   * no artifact to offer.
+   */
+  if (trace.sawNoSections) {
+    return { ok: false, error: 'auth_expired', message: ERROR_TEXT.auth_expired, partial: false };
+  }
+  /**
+   * Partial, but with nothing on disk.
+   *
+   * Observed against 0.4.0: a Microsoft modal covered the section list, all
+   * three sections failed to open, and the run reported
+   * `Export finished with errors - 3 item(s) could not be exported` with
+   * `Total Pages: 0`. That is not a partial export, it is a failed one, and
+   * calling it partial offers the user a zip containing no files.
+   *
+   * `pagesExported` counts `Saved` lines, so zero means no page file was
+   * written. An empty notebook also exports zero pages - but that run prints
+   * `Export complete!` and exits 0, and never reaches this branch.
+   */
+  if (trace.sawExportPartial && trace.pagesExported === 0) {
+    return { ok: false, error: 'export_failed', message: ERROR_TEXT.export_failed, partial: false };
   }
   if (trace.sawExportPartial) {
     return { ok: false, error: 'export_partial', message: ERROR_TEXT.export_partial, partial: true };
