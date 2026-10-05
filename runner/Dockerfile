@@ -72,6 +72,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
 # namespaces on the host:
 #   sysctl kernel.unprivileged_userns_clone=1
 #   sysctl kernel.apparmor_restrict_unprivileged_userns=0
-# PLAN-v3(POC).md §18. CHROMIUM_NO_SANDBOX exists for a host that cannot provide
-# them, and setting it weakens isolation - it is never the default.
+# PLANNING/PLAN-v3(POC).md §18. CHROMIUM_NO_SANDBOX exists for a host that
+# cannot provide them, and setting it weakens isolation - never the default.
 CMD ["node", "runner/dist/index.js"]

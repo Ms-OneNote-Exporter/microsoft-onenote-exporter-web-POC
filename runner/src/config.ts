@@ -30,7 +30,7 @@ export interface RunnerConfig {
   /**
    * Disables Chromium's renderer sandbox. Only for a host that cannot enable
    * unprivileged user namespaces, and it removes the reason a browser runs in
-   * this container at all. See PLAN-v3(POC).md §18.
+   * this container at all. See PLANNING/PLAN-v3(POC).md §18.
    */
   chromiumNoSandbox: boolean;
 }

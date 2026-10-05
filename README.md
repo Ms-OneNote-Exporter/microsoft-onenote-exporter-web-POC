@@ -7,12 +7,12 @@ are published.
 **It does not modify any of them.** They are installed from npm at pinned
 versions and driven as subprocesses. Everything the packages would report
 through events is recovered from their log output instead — see
-[`PLAN-v3(POC).md`](./PLAN-v3(POC).md) for what that costs and why.
+`PLANNING/PLAN-v3(POC).md` for what that costs and why.
 
 > **This is a proof of concept, for localhost or a trusted LAN.** There is no
 > account, the session GUID is the only credential, there is no TLS, and there
 > are no rate limits. Before putting it on the public internet, read §"Known POC
-> limitations" below and PLAN-v2 §10/§13.1.
+> limitations" below and `PLANNING/PLAN-v2.md` §10/§13.1.
 
 ## What it does
 
@@ -96,6 +96,9 @@ app/              Fastify server, session state, job queue, SSE
 app/src/web/      React UI (self-hosted, no CDN)
 test/smoke.sh     end-to-end run against the real app and runner
 data/             live sessions: auth.json, exports, logs. Never commit.
+PLANNING/         PLAN.md, PLAN-v2.md, PLAN-v3(POC).md. Gitignored and not
+                  committed: they carry local paths and name private repos, so
+                  they are named here by section number rather than linked.
 ```
 
 `data/` holds Microsoft cookies and your exported notes. It is gitignored, it is

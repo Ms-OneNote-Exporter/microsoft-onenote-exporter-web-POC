@@ -1,4 +1,4 @@
-# POC topology - see PLAN-v3(POC).md §3.
+# POC topology - see PLANNING/PLAN-v3(POC).md §3.
 #
 # Two containers, one bind-mounted data directory, no reverse proxy. This is a
 # POC meant to run on localhost or a trusted LAN: no TLS, no rate limits, and the
@@ -49,7 +49,7 @@ services:
       # host that cannot enable unprivileged user namespaces. See §18.
       CHROMIUM_NO_SANDBOX: ${CHROMIUM_NO_SANDBOX:-0}
     # Technical requirements, not paranoia. Without them Chromium does not run:
-    # see PLAN-v3(POC).md §18 for the per-flag rationale.
+    # see PLANNING/PLAN-v3(POC).md §18 for the per-flag rationale.
     init: true
     shm_size: "1g"
     tmpfs:

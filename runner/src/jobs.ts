@@ -244,7 +244,7 @@ export class JobManager {
    * There is no cooperative cancel - that would need a `signal` option in the
    * export package, which this POC is not allowed to add. So a page caught
    * mid-write can be truncated, which is why partial artifacts are labelled
-   * partial. See PLAN-v3(POC).md §7.
+   * partial. See PLANNING/PLAN-v3(POC).md §7.
    */
   abort(guid: string): boolean {
     const job = this.active;
