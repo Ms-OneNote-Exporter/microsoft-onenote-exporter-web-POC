@@ -23,4 +23,9 @@ data/
 
 # user files
 reviews/
+
+# Loose plan drafts at the repo root are personal. The published design docs
+# live in PLANNING/ and are tracked - they are cited by section number from
+# the code, so a reader needs them.
 PLAN*.md
+!PLANNING/PLAN*.md

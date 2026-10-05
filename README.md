@@ -7,7 +7,8 @@ are published.
 **It does not modify any of them.** They are installed from npm at pinned
 versions and driven as subprocesses. Everything the packages would report
 through events is recovered from their log output instead — see
-`PLANNING/PLAN-v3(POC).md` for what that costs and why.
+[`PLANNING/PLAN-v3(POC).md`](./PLANNING/PLAN-v3(POC).md) for what that costs
+and why.
 
 > **This is a proof of concept, for localhost or a trusted LAN.** There is no
 > account, the session GUID is the only credential, there is no TLS, and there
@@ -96,9 +97,9 @@ app/              Fastify server, session state, job queue, SSE
 app/src/web/      React UI (self-hosted, no CDN)
 test/smoke.sh     end-to-end run against the real app and runner
 data/             live sessions: auth.json, exports, logs. Never commit.
-PLANNING/         PLAN.md, PLAN-v2.md, PLAN-v3(POC).md. Gitignored and not
-                  committed: they carry local paths and name private repos, so
-                  they are named here by section number rather than linked.
+PLANNING/         PLAN.md, PLAN-v2.md, PLAN-v3(POC).md. The design docs the
+                  code cites by section number; v3 is the one that matches
+                  what is built.
 ```
 
 `data/` holds Microsoft cookies and your exported notes. It is gitignored, it is
